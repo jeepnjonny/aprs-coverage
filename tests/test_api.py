@@ -86,3 +86,13 @@ def test_public_endpoints(client):
     assert client.get("/admin").status_code == 200
     assert client.get("/api/config").json()["cell_sizes"]
     assert client.get("/api/coverage", params={"cell": 123}).status_code == 400
+
+
+def test_cookie_scoped_to_forwarded_prefix(client):
+    pw = {"password": "correct horse battery"}
+    r = client.post("/api/admin/login", json=pw, headers={"X-Forwarded-Prefix": "/aprs-coverage"})
+    assert "Path=/aprs-coverage/" in r.headers["set-cookie"]
+    r = client.post("/api/admin/login", json=pw)
+    assert "Path=/;" in r.headers["set-cookie"]
+    r = client.post("/api/admin/login", json=pw, headers={"X-Forwarded-Prefix": "/x; Domain=evil"})
+    assert "Path=/;" in r.headers["set-cookie"]

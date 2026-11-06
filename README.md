@@ -3,7 +3,7 @@
 A public map of real APRS RF coverage in SW Idaho, built from the packets of a
 short list of registered mobile stations.
 
-Live site: https://apps.k7swi.org
+Live site: https://apps.k7swi.org/aprs-coverage/
 
 When a registered mobile's position packet reaches APRS-IS over RF, the small
 square it was sent from is marked as covered. Over time, drives fill in a map of
@@ -36,7 +36,7 @@ where the local igates and digipeaters can actually hear a mobile.
   - Time presets (24 hours to all time) or a custom range
   - Live updates: new packets appear and flash as they arrive
   - Stats per igate/digi (squares, farthest distance, packets gated) and per mobile
-- **Admin page** (`/admin`, one password-protected account). Register mobiles, igates
+- **Admin page** (`/aprs-coverage/admin`, one password-protected account). Register mobiles, igates
   and digipeaters, and see the APRS-IS connection status and recent rejects.
   Station changes take effect immediately, without a restart.
 
@@ -65,18 +65,24 @@ for them, so the square size can be changed at any time without reprocessing dat
 ## Deploying
 
 The scripts target a Debian or Ubuntu server (a Proxmox VM or LXC container works)
-with nginx and systemd. The app installs to `/srv/aprs-coverage`, runs as `www-data`
-on `127.0.0.1:8077`, and nginx serves it at `apps.k7swi.org`.
+with nginx and systemd. The app installs to `/srv/aprs-coverage` and runs as
+`www-data` on `127.0.0.1:8077`. nginx serves it as a directory of the existing
+`apps.k7swi.org` site: **https://apps.k7swi.org/aprs-coverage/**.
+
+The repo's [nginx-aprs-coverage.conf](nginx-aprs-coverage.conf) is not a whole site.
+It is a few `location /aprs-coverage/ ...` blocks that get included in the
+`apps.k7swi.org` server block, which already has the HTTPS certificate. nginx strips
+the `/aprs-coverage` prefix before passing requests to the app, and the pages use
+relative URLs, so the app works under any path.
 
 ### Before you start
 
-- DNS for `apps.k7swi.org` points at the server, and ports 80 and 443 reach it.
+- `apps.k7swi.org` is already served by nginx over HTTPS on this server.
 - `git` and `sudo` are installed. A fresh Debian LXC often has neither:
   `apt install git sudo`.
 - Nothing else on the server uses port 8077. If something does, change `PORT` in
   `setup.sh` and the two `proxy_pass` lines in `nginx-aprs-coverage.conf`.
-- No other nginx site already uses `server_name apps.k7swi.org`. If one does, nginx
-  warns about a conflicting server name and only one of them will answer.
+- Nothing else on `apps.k7swi.org` uses the `/aprs-coverage/` path.
 
 ### First install
 
@@ -85,9 +91,9 @@ on `127.0.0.1:8077`, and nginx serves it at `apps.k7swi.org`.
 sudo git clone https://github.com/jeepnjonny/aprs-coverage.git /opt/aprs-coverage-src
 cd /opt/aprs-coverage-src
 
-# 2. Install packages, the systemd service and nginx, get a certificate, and set
-#    the admin password (you will be prompted for it and for a Let's Encrypt email).
-sudo bash setup.sh --ssl
+# 2. Install packages and the systemd service, copy the nginx snippet to
+#    /etc/nginx/snippets/aprs-coverage.conf, and set the admin password.
+sudo bash setup.sh
 
 # 3. Set the APRS-IS login name. Use your callsign with an SSID no other station
 #    uses, for example K7SWI-CV. It is read-only, so no passcode is needed.
@@ -95,7 +101,21 @@ sudo nano /srv/aprs-coverage/.env
 sudo systemctl restart aprs-coverage
 ```
 
-Then open `https://apps.k7swi.org/admin`, log in, and register your stations:
+4. Hook it into the site (one time only). `setup.sh` prints which file holds the
+   `apps.k7swi.org` server block. Add this line inside the HTTPS (`listen 443`)
+   server block, next to the other apps:
+
+   ```nginx
+   include snippets/aprs-coverage.conf;
+   ```
+
+   Then check and reload nginx:
+
+   ```bash
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+Then open https://apps.k7swi.org/aprs-coverage/admin, log in, and register your stations:
 
 - **Mobiles**: an exact callsign-SSID (`K7ABC-9`), or `K7ABC*` to match every SSID.
   Only mobiles create coverage.
@@ -103,10 +123,8 @@ Then open `https://apps.k7swi.org/admin`, log in, and register your stations:
   leave it blank and the map uses the position the station beacons.
 
 The admin page shows the APRS-IS connection state. Coverage appears as soon as a
-registered mobile is heard on RF.
-
-Running `setup.sh` without `--ssl` sets up plain HTTP only. Admin login needs HTTPS
-unless `COOKIE_SECURE=0` is set in `.env`.
+registered mobile is heard on RF. The admin login cookie is limited to
+`/aprs-coverage/`, so it is never sent to the other apps on the site.
 
 ### Updating
 
@@ -119,7 +137,10 @@ sudo bash update.sh
 ```
 
 `update.sh` copies the code to `/srv/aprs-coverage`, updates Python packages and
-restarts the service. It never touches `.env` or the database in `/srv/aprs-coverage/data`.
+restarts the service. If the nginx snippet changed, it copies the new one to
+`/etc/nginx/snippets`, checks it with `nginx -t`, and reloads nginx. If the check
+fails, it puts the old snippet back. It never touches `.env` or the database in
+`/srv/aprs-coverage/data`.
 
 Automatically: `auto-update.sh` checks GitHub and deploys only when there are new
 commits. Add it to root's crontab (`sudo crontab -e`) to check every 10 minutes:

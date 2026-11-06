@@ -274,6 +274,19 @@ class LoginIn(BaseModel):
     password: str
 
 
+_PREFIX_OK = re.compile(r"^(/[A-Za-z0-9._~-]+)+/?$")
+
+
+def _cookie_path(request: Request) -> str:
+    """Scope the session cookie to the URL prefix nginx serves the app under
+    (sent as X-Forwarded-Prefix, e.g. /aprs-coverage), so it is not sent to the
+    other apps on the same host. Without the header (local runs) it is '/'."""
+    prefix = request.headers.get("x-forwarded-prefix", "").strip()
+    if not _PREFIX_OK.match(prefix):
+        return "/"
+    return prefix.rstrip("/") + "/"
+
+
 @app.post("/api/admin/login")
 def admin_login(body: LoginIn, request: Request, response: Response):
     ip = auth.client_ip(request)
@@ -286,14 +299,14 @@ def admin_login(body: LoginIn, request: Request, response: Response):
         raise HTTPException(401, "Wrong password")
     token = auth.create_session()
     response.set_cookie(auth.COOKIE, token, max_age=config.SESSION_DAYS * 86400, httponly=True,
-                        secure=config.COOKIE_SECURE, samesite="strict", path="/")
+                        secure=config.COOKIE_SECURE, samesite="strict", path=_cookie_path(request))
     return {"ok": True}
 
 
 @app.post("/api/admin/logout")
 def admin_logout(request: Request, response: Response):
     auth.destroy_session(request.cookies.get(auth.COOKIE))
-    response.delete_cookie(auth.COOKIE, path="/")
+    response.delete_cookie(auth.COOKIE, path=_cookie_path(request))
     return {"ok": True}
 
 

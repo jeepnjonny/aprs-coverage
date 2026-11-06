@@ -29,3 +29,19 @@ sudo -u "${SERVICE_USER}" "${INSTALL_DIR}/.venv/bin/pip" install -q -r "${INSTAL
 
 sudo systemctl restart aprs-coverage
 echo "  aprs-coverage restarted"
+
+# ── nginx location snippet (included from the apps.k7swi.org server block) ──
+SNIPPET=/etc/nginx/snippets/aprs-coverage.conf
+if [ -d /etc/nginx ] && ! sudo cmp -s "${INSTALL_DIR}/nginx-aprs-coverage.conf" "${SNIPPET}"; then
+  sudo mkdir -p /etc/nginx/snippets
+  [ -f "${SNIPPET}" ] && sudo cp "${SNIPPET}" "${SNIPPET}.bak"
+  sudo cp "${INSTALL_DIR}/nginx-aprs-coverage.conf" "${SNIPPET}"
+  if sudo nginx -t 2>/dev/null; then
+    sudo systemctl reload nginx
+    echo "  nginx snippet updated and reloaded"
+  else
+    echo "  WARNING: nginx -t failed with the new snippet; restoring the previous one"
+    if [ -f "${SNIPPET}.bak" ]; then sudo mv "${SNIPPET}.bak" "${SNIPPET}"; else sudo rm -f "${SNIPPET}"; fi
+    sudo nginx -t
+  fi
+fi

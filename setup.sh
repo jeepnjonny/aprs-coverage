@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# APRS Coverage: first-time server setup (Debian/Ubuntu, nginx, certbot)
-# Run from the git checkout as a user with sudo:  bash setup.sh [--ssl]
+# APRS Coverage: first-time server setup (Debian/Ubuntu, nginx, systemd)
+# Serves the app at https://apps.k7swi.org/aprs-coverage/ through the existing
+# apps.k7swi.org nginx site (which already has its TLS certificate).
+# Run from the git checkout as a user with sudo:  bash setup.sh
 set -euo pipefail
 
 INSTALL_DIR="/srv/aprs-coverage"
 SERVICE_USER="www-data"
 HOSTNAME="apps.k7swi.org"
-PORT=8077
-CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"   # Let's Encrypt notices; prompted for if unset
-SSL=${1:-""}
+URL_PATH="/aprs-coverage/"
+PORT=8077   # also in nginx-aprs-coverage.conf
 SRC="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
 
 echo "=== APRS Coverage setup ==="
@@ -53,50 +54,24 @@ if [ -t 0 ]; then
   fi
 fi
 
-# ── nginx + TLS ──────────────────────────────────────────────────────────────
-NGINX_AVAILABLE=/etc/nginx/sites-available/aprs-coverage
-NGINX_ENABLED=/etc/nginx/sites-enabled/aprs-coverage
-HTTP_ONLY_CONF="server {
-    listen 80;
-    listen [::]:80;
-    server_name ${HOSTNAME};
-    location / {
-        proxy_pass http://127.0.0.1:${PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_buffering off;
-        proxy_read_timeout 3600s;
-    }
-}"
-
-CERT_EXISTS=false
-[ -f "/etc/letsencrypt/live/${HOSTNAME}/fullchain.pem" ] && CERT_EXISTS=true
-
-if [ "${CERT_EXISTS}" = true ]; then
-  sudo cp "${INSTALL_DIR}/nginx-aprs-coverage.conf" "${NGINX_AVAILABLE}"
-  sudo ln -sf "${NGINX_AVAILABLE}" "${NGINX_ENABLED}"
+# ── nginx ────────────────────────────────────────────────────────────────────
+# update.sh has already copied the location snippet to /etc/nginx/snippets.
+# It only takes effect once the apps.k7swi.org server block includes it.
+INCLUDE_LINE="include snippets/aprs-coverage.conf;"
+NGINX_OK=false
+if grep -rqsF "snippets/aprs-coverage.conf" /etc/nginx/sites-enabled /etc/nginx/conf.d; then
   sudo nginx -t && sudo systemctl reload nginx
-  echo "  nginx: SSL config deployed for https://${HOSTNAME}/"
-elif [ "${SSL}" = "--ssl" ]; then
-  echo "${HTTP_ONLY_CONF}" | sudo tee "${NGINX_AVAILABLE}" > /dev/null
-  sudo ln -sf "${NGINX_AVAILABLE}" "${NGINX_ENABLED}"
-  sudo nginx -t && sudo systemctl reload nginx
-  command -v certbot &>/dev/null || sudo apt-get install -y -qq certbot python3-certbot-nginx
-  if [ -z "${CERTBOT_EMAIL}" ]; then
-    read -rp "Email for Let's Encrypt expiry notices: " CERTBOT_EMAIL
-  fi
-  sudo certbot certonly --nginx -d "${HOSTNAME}" --non-interactive --agree-tos -m "${CERTBOT_EMAIL}"
-  sudo cp "${INSTALL_DIR}/nginx-aprs-coverage.conf" "${NGINX_AVAILABLE}"
-  sudo nginx -t && sudo systemctl reload nginx
-  echo "  SSL configured: https://${HOSTNAME}/"
-elif [ -f "${NGINX_AVAILABLE}" ]; then
-  echo "  nginx: ${NGINX_AVAILABLE} exists, leaving it alone. Run with --ssl for HTTPS."
+  NGINX_OK=true
+  echo "  nginx: snippet is included, reloaded"
 else
-  echo "${HTTP_ONLY_CONF}" | sudo tee "${NGINX_AVAILABLE}" > /dev/null
-  sudo ln -sf "${NGINX_AVAILABLE}" "${NGINX_ENABLED}"
-  sudo nginx -t && sudo systemctl reload nginx
-  echo "  nginx: HTTP only. Re-run with --ssl for HTTPS (COOKIE_SECURE=1 needs HTTPS to log in)."
+  SITE_FILE="$(grep -rlsE "server_name[^;]*${HOSTNAME}" /etc/nginx/sites-enabled /etc/nginx/conf.d | head -1 || true)"
+  echo ""
+  echo "  nginx: one manual step left. Add this line inside the HTTPS (listen 443)"
+  echo "  server block for ${HOSTNAME}${SITE_FILE:+ in ${SITE_FILE}}:"
+  echo ""
+  echo "      ${INCLUDE_LINE}"
+  echo ""
+  echo "  then run:  sudo nginx -t && sudo systemctl reload nginx"
 fi
 
 echo ""
@@ -104,4 +79,6 @@ echo "=== Setup complete ==="
 echo "  Edit config:  sudo nano ${INSTALL_DIR}/.env   (then: sudo systemctl restart aprs-coverage)"
 echo "  Status:       sudo systemctl status aprs-coverage"
 echo "  Logs:         sudo journalctl -u aprs-coverage -f"
-echo "  Admin:        https://${HOSTNAME}/admin"
+echo "  Map:          https://${HOSTNAME}${URL_PATH}"
+echo "  Admin:        https://${HOSTNAME}${URL_PATH}admin"
+[ "${NGINX_OK}" = true ] || echo "  (after adding the nginx include line above)"

@@ -1,6 +1,6 @@
 # APRS Coverage Map: Project Plan
 
-Host: `https://apps.k7swi.org` (an existing nginx site on a Proxmox Linux guest)
+Host: `https://apps.k7swi.org/aprs-coverage/`, a directory of the existing nginx site on a Proxmox Linux guest
 
 ## Goal
 
@@ -20,7 +20,7 @@ only holds recent data.
 | Map access | Public. The same data is already public on aprs.fi. |
 | Admin | One admin account with a password. |
 | Stack | Python (FastAPI + aprslib) and SQLite. No Docker, no Postgres. |
-| Hosting | nginx reverse proxy + certbot + systemd on the existing server, same pattern as CourseSentry. |
+| Hosting | systemd service behind nginx, served under `/aprs-coverage/` of the existing `apps.k7swi.org` site through an included location snippet. The prefix is stripped by nginx and the pages use relative URLs. |
 | Deploys | `git pull` plus `update.sh`, optionally run by cron through `auto-update.sh`. No GitHub Actions. |
 | Backups | None. |
 | Local RF feed | None. The server has no radio hardware. |
@@ -40,7 +40,7 @@ only holds recent data.
  [FastAPI]  public map API + live feed (SSE) + admin API, one uvicorn worker
         ^
         |
- [nginx]  TLS (certbot) + reverse proxy, apps.k7swi.org
+ [nginx]  existing apps.k7swi.org site (TLS); location /aprs-coverage/ -> 127.0.0.1:8077
         ^
         |
  [browser]  Leaflet map (static/index.html, map.js) and admin page (static/admin.html)
@@ -113,9 +113,10 @@ every square boundary.
 - Stats tab: per igate/digi (direct packets, squares, farthest distance, packets gated)
   and per mobile (packets, squares, last heard). Click a row to zoom to it.
 
-## Admin (`/admin`)
+## Admin (`/aprs-coverage/admin`)
 
-- Password login: scrypt hash, server-side sessions in an HttpOnly cookie, login rate limit.
+- Password login: scrypt hash, server-side sessions in an HttpOnly cookie scoped to the
+  app's path (from `X-Forwarded-Prefix`), login rate limit.
   Write requests require a header that cross-site forms cannot send.
 - Add, edit and remove stations. Toggle active, set label, color and manual position.
 - APRS-IS feed status: connected, active filter, server banner, counters, last packet.
@@ -130,7 +131,7 @@ Done:
 2. SQLite storage
 3. Public map with every feature listed above
 4. Admin page and station registry
-5. Deploy scripts: `setup.sh`, `update.sh`, `auto-update.sh`, nginx config
+5. Deploy scripts: `setup.sh`, `update.sh`, `auto-update.sh`, nginx location snippet
 6. Unit and API tests (`pytest`)
 
 Next:
