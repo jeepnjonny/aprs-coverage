@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>APRS Coverage Admin</title>
+  <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<main class="admin">
+  <header>
+    <h1>APRS Coverage Admin</h1>
+    <span><a href="./">← Map</a> <button id="logout" class="btn secondary" hidden>Log out</button></span>
+  </header>
+
+  <section id="login-card" class="card" hidden>
+    <form id="login-form">
+      <label class="field">Admin password <input type="password" id="password" autocomplete="current-password" required></label>
+      <button class="btn">Log in</button> <span id="login-err" class="error"></span>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+    <section class="card">
+      <h2>APRS-IS feed</h2>
+      <dl class="kv" id="status"></dl>
+    </section>
+
+    <section class="card">
+      <h2 id="form-title">Register a station</h2>
+      <form id="station-form">
+        <input type="hidden" id="s-id">
+        <div class="grid-form">
+          <label class="field">Callsign <input type="text" id="s-callsign" required placeholder="K7ABC-9 or K7ABC*"></label>
+          <label class="field">Type
+            <select id="s-kind">
+              <option value="mobile">Mobile</option>
+              <option value="igate">Igate</option>
+              <option value="digi">Digipeater</option>
+              <option value="digi_igate">Digi + igate</option>
+            </select>
+          </label>
+          <label class="field">Label <input type="text" id="s-label" placeholder="e.g. Shafer Butte"></label>
+          <label class="field inline">Map color <input type="color" id="s-color" value="#2f81f7"></label>
+          <label class="field infra-only">Latitude <input type="number" step="any" id="s-lat" placeholder="auto from beacon"></label>
+          <label class="field infra-only">Longitude <input type="number" step="any" id="s-lon" placeholder="auto from beacon"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="s-usecolor"> Use a fixed color (otherwise one is assigned)</label>
+        <label class="check"><input type="checkbox" id="s-active" checked> Active (included in the APRS-IS filter)</label>
+        <label class="field">Notes <input type="text" id="s-notes"></label>
+        <p class="muted small" id="kind-help"></p>
+        <button class="btn" id="s-save">Add station</button>
+        <button type="button" class="btn secondary" id="s-cancel" hidden>Cancel edit</button>
+        <span id="form-msg"></span>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Registered stations</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Callsign</th><th>Type</th><th>Label</th><th>Position</th><th>Own beacon</th><th>Active</th><th></th></tr></thead>
+        <tbody id="stations"></tbody>
+      </table></div>
+    </section>
+
+    <section class="card">
+      <h2>Rejected packets (data quality)</h2>
+      <p class="muted small">Packets from registered mobiles that were dropped: not over RF, ambiguous or bad positions, impossible jumps, duplicates. Shows the newest 100.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Time</th><th>Source</th><th>Reason</th><th>Raw</th></tr></thead>
+        <tbody id="rejects"></tbody>
+      </table></div>
+    </section>
+
+    <section class="card">
+      <h2>Change password</h2>
+      <form id="pw-form" class="grid-form">
+        <label class="field">Current <input type="password" id="pw-cur" autocomplete="current-password" required></label>
+        <label class="field">New (10+ chars) <input type="password" id="pw-new" autocomplete="new-password" minlength="10" required></label>
+        <div class="field"><button class="btn">Change</button> <span id="pw-msg"></span></div>
+      </form>
+    </section>
+  </div>
+</main>
+<script src="static/admin.js"></script>
+</body>
+</html>

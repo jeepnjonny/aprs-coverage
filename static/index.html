@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>APRS Coverage Map</title>
+  <meta name="description" content="APRS RF coverage from registered mobiles, igates and digipeaters in the Treasure Valley.">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+  <div id="map" aria-label="Coverage map"></div>
+
+  <button id="panel-toggle" class="panel-toggle" aria-controls="panel" aria-expanded="true" title="Show/hide controls">☰</button>
+
+  <aside id="panel" class="panel">
+    <header class="panel-head">
+      <h1>APRS Coverage</h1>
+      <span id="live" class="live" title="Live feed status"><span class="dot"></span><span id="live-text">connecting…</span></span>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button role="tab" class="tab active" data-tab="layers" aria-selected="true">Map</button>
+      <button role="tab" class="tab" data-tab="filters" aria-selected="false">Filters</button>
+      <button role="tab" class="tab" data-tab="stats" aria-selected="false">Stats</button>
+    </nav>
+
+    <section class="tab-body" id="tab-layers">
+      <label class="field">Time range
+        <select id="preset">
+          <option value="86400">Last 24 hours</option>
+          <option value="604800" selected>Last 7 days</option>
+          <option value="2592000">Last 30 days</option>
+          <option value="7776000">Last 90 days</option>
+          <option value="31536000">Last year</option>
+          <option value="all">All time</option>
+          <option value="custom">Custom…</option>
+        </select>
+      </label>
+      <div id="custom-range" class="custom-range" hidden>
+        <label class="field">From <input type="datetime-local" id="from"></label>
+        <label class="field">To <input type="datetime-local" id="to"></label>
+        <button id="apply-range" class="btn">Apply</button>
+      </div>
+
+      <label class="field">Color squares by
+        <select id="color-mode">
+          <option value="single">Single color (overall coverage)</option>
+          <option value="heard_by">Igate / digi that heard it</option>
+          <option value="mobile">Reporting mobile station</option>
+        </select>
+      </label>
+      <label class="field inline" id="single-color-row">Coverage color
+        <input type="color" id="single-color" value="#2f81f7">
+      </label>
+
+      <label class="check"><input type="checkbox" id="shade" checked> Shade by packet count (signal strength)</label>
+
+      <label class="field">Square size
+        <select id="cell"></select>
+      </label>
+
+      <label class="field">Overlay opacity <output id="opacity-val">60%</output>
+        <input type="range" id="opacity" min="5" max="100" value="60">
+      </label>
+      <label class="check"><input type="checkbox" id="borders" checked> Square outlines</label>
+      <label class="check"><input type="checkbox" id="show-stations" checked> Igate / digi markers</label>
+      <label class="check"><input type="checkbox" id="show-live" checked> Flash live packets</label>
+
+      <label class="field">Base map
+        <select id="basemap">
+          <option value="osm">OpenStreetMap</option>
+          <option value="otm">OpenTopoMap</option>
+          <option value="usgs">USGS Topo</option>
+          <option value="usgsimg">USGS Imagery + Topo</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="tab-body" id="tab-filters" hidden>
+      <div class="filter-group">
+        <div class="filter-head"><h2>Mobile stations</h2>
+          <span><button class="link" data-all="mobiles">All</button> · <button class="link" data-none="mobiles">None</button></span></div>
+        <div id="mobiles-list" class="check-list"><p class="muted">No packets yet.</p></div>
+      </div>
+      <div class="filter-group">
+        <div class="filter-head"><h2>Igates / digipeaters</h2>
+          <span><button class="link" data-all="heard">All</button> · <button class="link" data-none="heard">None</button></span></div>
+        <label class="field">Match
+          <select id="match">
+            <option value="first">Heard the mobile directly (first RF hop)</option>
+            <option value="any">Anywhere in the path (incl. igate after a digi)</option>
+          </select>
+        </label>
+        <div id="heard-list" class="check-list"></div>
+      </div>
+    </section>
+
+    <section class="tab-body" id="tab-stats" hidden>
+      <h2>Igates / digipeaters</h2>
+      <p class="muted small">For the selected time range and mobiles. <em>Direct</em> = heard the mobile on RF as the first hop. <em>Gated</em> = packets this igate passed to APRS-IS. Click a row to zoom to it.</p>
+      <div class="table-wrap"><table id="infra-stats" class="stats">
+        <thead><tr><th>Station</th><th>Direct</th><th>Squares</th><th>Max km</th><th>Gated</th><th>Last heard</th></tr></thead>
+        <tbody></tbody></table></div>
+      <h2>Mobiles</h2>
+      <div class="table-wrap"><table id="mobile-stats" class="stats">
+        <thead><tr><th>Mobile</th><th>Packets</th><th>Squares</th><th>Last heard</th></tr></thead>
+        <tbody></tbody></table></div>
+    </section>
+
+    <footer class="panel-foot">
+      <span id="summary" class="muted small"></span>
+    </footer>
+  </aside>
+
+  <div id="legend" class="legend" hidden></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="static/map.js"></script>
+</body>
+</html>

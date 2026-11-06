@@ -1,124 +1,153 @@
-# APRS Coverage Map: Project Plan (draft)
+# APRS Coverage Map: Project Plan
 
-Target host: `apps.k7swi.org` (remote server)
+Host: `https://apps.k7swi.org` (an existing nginx site on a Proxmox Linux guest)
 
 ## Goal
 
-Map real-world APRS RF coverage. A grid cell counts as covered when an RF packet
-from a registered station at that location reaches APRS-IS. Coverage can be shown
-per igate/digipeater, per reporting station, or as a single overall layer. History
-is stored locally because APRS-IS only keeps recent data.
+Map real APRS RF coverage in SW Idaho (Emmett to Nampa, centred on Boise/Meridian).
+When an RF packet from a registered mobile reaches APRS-IS, the small grid square it
+came from is marked as covered. Squares can be colored as one overall layer, by the
+igate/digi that heard the mobile, or by the mobile itself, and shaded by packet count
+as a rough measure of signal strength. History is kept locally because APRS-IS
+only holds recent data.
 
-## Proposed architecture
+## Decisions
+
+| Topic | Decision |
+|---|---|
+| Whose packets count | Only registered mobiles. All other traffic is ignored. |
+| Grid | Fixed squares measured in meters (100 m, 250 m, 500 m, 1 km, 2 km; chosen on the map). No Maidenhead. |
+| Map access | Public. The same data is already public on aprs.fi. |
+| Admin | One admin account with a password. |
+| Stack | Python (FastAPI + aprslib) and SQLite. No Docker, no Postgres. |
+| Hosting | nginx reverse proxy + certbot + systemd on the existing server, same pattern as CourseSentry. |
+| Deploys | `git pull` plus `update.sh`, optionally run by cron through `auto-update.sh`. No GitHub Actions. |
+| Backups | None. |
+| Local RF feed | None. The server has no radio hardware. |
+
+## Architecture
 
 ```
- APRS-IS (rotate.aprs2.net:14580, read-only passcode -1, server-side filter)
-        |
+ APRS-IS (rotate.aprs2.net:14580, passcode -1 = read-only)
+        |  filter b/<registered mobiles and igates/digis>
         v
- [ingester]  long-running worker: parse -> validate -> attribute -> store
-        |
+ [ingester]  asyncio task inside the web process
+        |    parse -> route attribution -> quality checks -> store
         v
- [PostgreSQL + PostGIS]  raw packets + pre-aggregated grid cells
+ [SQLite, WAL mode]  packets, rejects, stations, settings, sessions
         ^
         |
- [web API]  FastAPI: coverage queries (GeoJSON/vector), station list, admin CRUD
+ [FastAPI]  public map API + live feed (SSE) + admin API, one uvicorn worker
         ^
         |
- [frontend]  Leaflet SPA: basemaps, filters, time range, opacity, color modes
+ [nginx]  TLS (certbot) + reverse proxy, apps.k7swi.org
         ^
         |
- [Caddy]  TLS (Let's Encrypt) + reverse proxy, apps.k7swi.org
+ [browser]  Leaflet map (static/index.html, map.js) and admin page (static/admin.html)
 ```
 
-All of it runs from one `docker compose` stack on the server.
+There is one process and one database file. The ingester runs inside the web
+process, so uvicorn must run with exactly one worker.
 
-### Proposed stack
-| Layer | Choice | Why |
-|---|---|---|
-| Ingest | Python 3.12 + `aprslib` (or a small custom parser) | Mature APRS parsing (compressed, Mic-E, uncompressed) |
-| API | FastAPI + SQLAlchemy | Async, simple, shares code with the ingester |
-| DB | PostgreSQL 16 + PostGIS | Spatial queries, safe for concurrent ingest and reads, easy backups |
-| Frontend | Leaflet + vanilla TS/Vite (no heavy framework) | Light, handles tile layers and opacity well |
-| Proxy/TLS | Caddy | Automatic HTTPS |
-| Deploy | Docker Compose + GitHub Actions (optional) | Reproducible, one-command deploy |
+## APRS-IS ingest (`app/ingest.py`, `app/packets.py`)
 
-## APRS-IS ingest
-
-- Connect read-only: `user N0CALL pass -1 vers aprs-coverage 0.1 filter ...`
-- Build the server-side filter from the registry and reconnect when it changes:
-  - `b/CALL1*/CALL2*`: packets *from* registered mobiles (SSID wildcards)
-  - `e/IGATE1/IGATE2`: packets *gated by* registered igates (entry station after qAR)
-  - `d/DIGI1/DIGI2`: packets *digipeated by* registered digis
-- Keep only RF-originated packets: q-construct `qAR`/`qAO`. Drop `qAC`/`qAS`/`qAX`
-  (internet-sourced, e.g. APRSdroid over TCP), which say nothing about RF coverage.
-- Validation: drop 0,0 positions, ambiguous positions (`!` ambiguity > 0), impossible
-  speed jumps, and packets with stale or duplicated timestamps.
+- Logs in read-only as `APRS_LOGIN` with passcode `-1`. Nothing is ever transmitted.
+- Server-side filter `b/` built from every active registered station. Mobiles may use a
+  trailing `*` to match every SSID. When the admin changes the list, the new filter
+  is sent live with `#filter`, without reconnecting.
+- Packets from registered igates/digis are used only to update their own beaconed
+  position for the map markers.
+- Packets from registered mobiles must carry a position, or they are ignored.
 
 ### Coverage attribution
-For each packet, work out who heard the mobile directly over RF:
-- No used digi hops: the **igate** heard it directly.
-- Used hops (`DIGI*`): the **first used digi** heard it directly; the igate heard the digi.
-- Untraced hops (`WIDE2*` with no callsign) make attribution partial. Flag these.
 
-Store the whole chain so the map can show either "heard direct by" or "any station in path".
+For each accepted packet, the path is split at the q-construct:
 
-## Data model (sketch)
+- No used digi hops: the **igate** heard the mobile directly.
+- One or more used hops (`CALL*`): the **first used digipeater** heard the mobile directly.
+- A used hop that is only a generic alias (`WIDE1*`, `WIDE2*`, a state alias) cannot be
+  traced to a station. These packets are stored with `heard_by = NULL` and shown as
+  "untraced hop".
 
-- `stations`: callsign, SSID pattern, type (mobile/igate/digi/fixed), owner, notes,
-  fixed lat/lon for igate/digi, active flag
-- `packets`: received_at, source call, lat/lon (PostGIS point), raw packet, path,
-  igate, first_hop, hop_count, attribution_quality
-- `cell_hits` (aggregate): cell_id, resolution, source_call, heard_by, day, count,
-  first_seen, last_seen. Updated on ingest so map queries stay fast.
-- `admin_users`, `sessions`, `audit_log`
+The full chain (digis + igate) is stored too, so the map can filter on
+"heard directly by" or "anywhere in the path".
 
-Raw packets stay indefinitely (they are small) so the grid can be rebuilt at any resolution later.
+### Data-quality filters
 
-## Map / frontend
+A packet is rejected, and logged in `rejects` for the admin page, if:
 
-- Basemaps: OSM Standard, OpenTopoMap, USGS Topo, USGS Imagery (optional)
-- Coverage layer: rectangles per cell, opacity slider, toggle cell borders
-- Color modes:
-  1. Single color (overall coverage)
-  2. By igate/digi (who heard it directly), with a legend
-  3. By reporting station (mobile)
-  4. (suggested) By packet count or by most recent time heard (heatmap scale)
-- Filters: multi-select mobiles, multi-select igates/digis, "direct only" toggle
-- Time: presets (24h / 7d / 30d / 1y / all) + custom range, optional playback slider
-- Markers for registered igates/digis, with click popups showing stats
+| Reason | Check |
+|---|---|
+| `not_rf` | q-construct is not `qAR`/`qAO`, or the path contains `TCPIP`/`TCPXX` (internet-sourced, for example APRSdroid over TCP) |
+| `no_qconstruct` | no q-construct in the path |
+| `ambiguous` | position ambiguity is set |
+| `bad_position` | out of range, or at 0,0 |
+| `out_of_region` | outside `REGION_BBOX`, if one is set |
+| `duplicate` | same position from the same heard-by station within `DUPLICATE_WINDOW_S` |
+| `speed_jump` | implies more than `MAX_SPEED_KMH` from the previous fix (1 km slack) |
+| `unparseable` | aprslib could not parse it |
 
-## Admin (password protected)
+## Storage (`app/db.py`)
 
-- `/admin` login (Argon2-hashed password, HttpOnly secure session cookie, CSRF, login rate limit)
-- CRUD for stations (mobiles, igates, digis) with SSID wildcard support
-- Ingest status: connected/disconnected, packets/hour, last packet per station,
-  alerts when an igate goes silent
-- Actions: rebuild aggregates, export data
+- `stations`: callsign (or pattern), kind (`mobile`, `igate`, `digi`, `digi_igate`),
+  label, notes, optional fixed color, manual lat/lon, last beaconed lat/lon, active flag.
+- `packets`: one row per accepted packet with time, mobile, position, speed, course,
+  igate, heard_by, hop count, chain and the raw line. Exact positions are kept, so any
+  grid size can be computed when the map asks.
+- `rejects`, `settings` (admin password hash and similar), `sessions`.
 
-## Repo layout (planned)
+Grid squares are computed in SQL at query time (`app/grid.py`). Square width is fixed by
+`GRID_REF_LAT`, so squares stay the same shape across the region. Changing it moves
+every square boundary.
 
-```
-aprs-coverage/
-  backend/        FastAPI app + ingester (shared package)
-  frontend/       Leaflet SPA (Vite)
-  deploy/         docker-compose.yml, Caddyfile, backup scripts
-  docs/           this plan, ops notes
-```
+## Map (`static/index.html`, `static/map.js`)
 
-## Milestones
+- Basemaps: OpenStreetMap, OpenTopoMap, USGS Topo, USGS Imagery + Topo.
+- Coverage squares with an opacity slider, outline toggle and square-size selector.
+- Color modes: single color, by igate/digi that heard it, by reporting mobile.
+- Shading by packets per square (1, 2–4, 5–11, 12–30, 31+) with a legend.
+- Filters: mobiles, igates/digis, "heard directly" vs "anywhere in path".
+- Time presets plus a custom range.
+- Igate/digi markers with stats popups.
+- Live updates through Server-Sent Events (`/api/live`). New packets flash on the map.
+- Stats tab: per igate/digi (direct packets, squares, farthest distance, packets gated)
+  and per mobile (packets, squares, last heard). Click a row to zoom to it.
 
-1. Ingester + DB schema: log filtered RF packets to Postgres
-2. Coverage API + basic map (single color, OSM)
-3. Admin login + station registry, so the filter is built from the DB
-4. Color modes, filters, time selector, topo basemaps, opacity
-5. Deploy to apps.k7swi.org (Caddy/TLS, backups, monitoring)
-6. Extras: exports, playback, igate health alerts, local TNC ingest
+## Admin (`/admin`)
+
+- Password login: scrypt hash, server-side sessions in an HttpOnly cookie, login rate limit.
+  Write requests require a header that cross-site forms cannot send.
+- Add, edit and remove stations. Toggle active, set label, color and manual position.
+- APRS-IS feed status: connected, active filter, server banner, counters, last packet.
+- Recent rejected packets with their reasons.
+- Change the password from the page, or on the server with `python -m app.manage set-password`.
+
+## Status
+
+Done:
+
+1. Ingester, attribution and quality filters, tested against live APRS-IS traffic
+2. SQLite storage
+3. Public map with every feature listed above
+4. Admin page and station registry
+5. Deploy scripts: `setup.sh`, `update.sh`, `auto-update.sh`, nginx config
+6. Unit and API tests (`pytest`)
+
+Next:
+
+- Deploy to apps.k7swi.org and register the real stations
+
+Later, maybe:
+
+- Alerts when a registered igate/digi goes silent
+- Mobile tracks
+- Data export
 
 ## Known limitations
 
-- **APRS-IS dedupes.** When several igates gate the same packet, APRS-IS passes only
-  the first one (about a 30 s window). Per-igate coverage will undercount for igates
-  that overlap. Mitigation: optional direct feed from your own igates (Direwolf/KISS/APRS-IS
-  client) where dupes are kept.
-- No bulk backfill from APRS-IS. History starts at first run. (aprs.fi API is limited
-  and rate-restricted.)
+- **APRS-IS drops duplicates.** When several igates gate the same packet, APRS-IS
+  passes only the first one (about a 30 s window). Per-igate coverage undercounts
+  where igates overlap. Overall coverage is not affected.
+- **No backfill.** History starts when the ingester first runs.
+- **Untraced hops.** A packet that went through a digi that does not insert its
+  callsign cannot be credited to that digi.
