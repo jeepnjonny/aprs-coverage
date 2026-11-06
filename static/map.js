@@ -127,10 +127,14 @@
     return sel.options[sel.selectedIndex]?.text || '';
   }
 
+  // Registered callsigns may be wildcards (K7ABC*, K7ABC-?), like the server's fnmatch.
+  const globRe = p => new RegExp('^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
+  // The station's label if it has one, otherwise just the callsign.
   const stationName = call => {
     if (call === '(untraced)') return 'Untraced hop';
-    const st = STATIONS.find(s => s.callsign === call);
-    return st && st.label ? `${call} · ${st.label}` : call;
+    const st = STATIONS.find(s => s.callsign === call)
+      || STATIONS.find(s => /[*?]/.test(s.callsign) && globRe(s.callsign).test(call));
+    return st && st.label ? st.label : call;
   };
 
   // One "who / how many" list for a square tooltip, largest first.
@@ -141,7 +145,7 @@
     let html = `<div class="tip-h">${title} (${list.length})</div><table>`;
     for (const [k, c] of list.slice(0, MAX)) {
       const sw = swatches ? `<span class="swatch" style="background:${keyColor(k)}"></span>` : '';
-      html += `<tr><td>${sw}${esc(swatches ? stationName(k) : k)}</td><td class="num">${c.toLocaleString()}</td></tr>`;
+      html += `<tr><td>${sw}${esc(stationName(k))}</td><td class="num">${c.toLocaleString()}</td></tr>`;
     }
     html += '</table>';
     if (list.length > MAX) html += `<div class="muted">+${list.length - MAX} more</div>`;
