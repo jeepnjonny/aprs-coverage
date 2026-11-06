@@ -123,7 +123,26 @@ table.stats tbody tr.clickable:hover { background: color-mix(in srgb, var(--acce
 .legend .scale div { text-align: center; color: var(--muted); font-size: 10px; }
 .legend .scale span { display: block; width: 24px; height: 16px; border-radius: 3px; margin: 0 auto 2px; }
 
-.leaflet-tooltip.cell-tip { font-size: 12px; }
+/* square and station tooltips */
+.leaflet-tooltip.cell-tip, .leaflet-tooltip.station-tip {
+  font-size: 12px; line-height: 1.35; padding: 6px 8px; min-width: 170px; max-width: 280px; white-space: normal;
+  background: var(--panel); color: var(--text); border: 1px solid var(--border); box-shadow: var(--shadow);
+}
+.leaflet-tooltip.cell-tip::before { display: none; }
+.leaflet-tooltip.station-tip::before { border-top-color: var(--border); }
+.cell-tip .muted, .station-card .muted { color: var(--muted); }
+.cell-tip .tip-h {
+  margin: 6px 0 2px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+}
+.cell-tip table, .station-card table { border-collapse: collapse; width: 100%; }
+.cell-tip td { padding: 1px 0; vertical-align: middle; }
+.cell-tip td.num { text-align: right; padding-left: 10px; font-variant-numeric: tabular-nums; }
+.cell-tip .swatch, .station-card .swatch { margin-right: 5px; }
+.station-card .sc-head { font-size: 13px; }
+.station-card .sc-label { margin-top: 1px; }
+.station-card .sc-range { font-size: 11px; margin: 4px 0 3px; }
+.station-card th { text-align: left; font-weight: normal; color: var(--muted); padding: 1px 12px 1px 0; white-space: nowrap; }
+.station-card td { text-align: right; font-variant-numeric: tabular-nums; padding: 1px 0; white-space: nowrap; }
 .pulse { animation: pulse 1.6s ease-out 3; }
 @keyframes pulse { 0% { stroke-width: 2; stroke-opacity: 1; } 100% { stroke-width: 18; stroke-opacity: 0; } }
 

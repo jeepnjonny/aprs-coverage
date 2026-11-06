@@ -31,6 +31,17 @@ app = FastAPI(title="APRS Coverage", lifespan=lifespan, docs_url=None, redoc_url
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
+@app.middleware("http")
+async def revalidate_pages(request: Request, call_next):
+    """Pages and static files must be revalidated on every load (a cheap 304
+    when unchanged), so browsers pick up a deploy without a hard refresh."""
+    response = await call_next(request)
+    path = request.url.path
+    if path in ("/", "/admin") or path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
+
+
 @app.get("/", include_in_schema=False)
 def index():
     return FileResponse(STATIC / "index.html")
@@ -160,26 +171,32 @@ def api_coverage(
     start, end = _time_range(start, end)
     cell = _cell_size(cell)
     cx, cy = grid.sql_cell_exprs(cell)
-    key = {"single": "''", "heard_by": "COALESCE(heard_by, '(untraced)')", "mobile": "mobile"}[color]
     with db.session() as c:
         where, args = _where(c, start, end, _csv(mobiles), _csv(heard_by), match)
         rows = c.execute(
-            f"SELECT {cx} AS x, {cy} AS y, {key} AS k, COUNT(*) AS n, MAX(ts) AS last "
-            f"FROM packets WHERE {where} GROUP BY x, y, k",
+            f"SELECT {cx} AS x, {cy} AS y, COALESCE(heard_by, '(untraced)') AS h, mobile AS m, "
+            f"COUNT(*) AS n, MIN(ts) AS first, MAX(ts) AS last "
+            f"FROM packets WHERE {where} GROUP BY x, y, h, m",
             args,
         ).fetchall()
+    # Every square carries both breakdowns so the tooltip can list who heard it
+    # and which mobiles were there, whatever the color mode.
     cells: dict[tuple[int, int], list] = {}
     for r in rows:
-        e = cells.setdefault((r["x"], r["y"]), [r["x"], r["y"], 0, 0, {}])
+        e = cells.setdefault((r["x"], r["y"]), [r["x"], r["y"], 0, 0, {}, {}, {}, r["first"]])
         e[2] += r["n"]
         e[3] = max(e[3], r["last"])
-        if color != "single":
-            e[4][r["k"]] = r["n"]
+        e[5][r["h"]] = e[5].get(r["h"], 0) + r["n"]
+        e[6][r["m"]] = e[6].get(r["m"], 0) + r["n"]
+        e[7] = min(e[7], r["first"])
+    for e in cells.values():
+        e[4] = {"single": {}, "heard_by": e[5], "mobile": e[6]}[color]
     dlat, dlon = grid.cell_deg(cell)
     return {
         "cell_m": cell, "dlat": dlat, "dlon": dlon, "start": start, "end": end,
         "packets": sum(e[2] for e in cells.values()),
-        "cells": list(cells.values()),  # [x, y, count, last_ts, {key: count}]
+        # [x, y, count, last_ts, {color key: count}, {heard_by: count}, {mobile: count}, first_ts]
+        "cells": list(cells.values()),
     }
 
 

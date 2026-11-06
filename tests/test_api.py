@@ -59,6 +59,12 @@ def test_station_crud_and_coverage(client):
     assert cov["packets"] == 2 and len(cov["cells"]) == 2
     keys = {k for c in cov["cells"] for k in c[4]}
     assert keys == {"K7SWI-1", "KG7KMV-10"}
+    # every square also carries heard-by and mobile breakdowns, in any color mode
+    single = client.get("/api/coverage", params=q).json()
+    assert all(c[4] == {} for c in single["cells"])
+    assert {k for c in single["cells"] for k in c[5]} == {"K7SWI-1", "KG7KMV-10"}
+    assert {k for c in single["cells"] for k in c[6]} == {"K7ABC-9"}
+    assert all(c[7] <= c[3] for c in single["cells"])
 
     only_digi = client.get("/api/coverage", params={**q, "heard_by": "K7SWI-1"}).json()
     assert only_digi["packets"] == 1
@@ -96,3 +102,11 @@ def test_cookie_scoped_to_forwarded_prefix(client):
     assert "Path=/;" in r.headers["set-cookie"]
     r = client.post("/api/admin/login", json=pw, headers={"X-Forwarded-Prefix": "/x; Domain=evil"})
     assert "Path=/;" in r.headers["set-cookie"]
+
+
+def test_pages_and_static_revalidate(client):
+    for path in ("/", "/admin", "/static/map.js"):
+        r = client.get(path)
+        assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+    etag = client.get("/static/map.js").headers["etag"]
+    assert client.get("/static/map.js", headers={"If-None-Match": etag}).status_code == 304

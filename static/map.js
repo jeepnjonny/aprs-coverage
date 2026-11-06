@@ -41,7 +41,16 @@
     baseLayer.bringToBack();
   }
 
+  // Squares (canvas, there can be thousands) sit below live flashes and station
+  // markers. Those two are few, so they are SVG in their own higher panes: SVG
+  // only takes the mouse where something is drawn, so hovering a marker shows
+  // the marker's tooltip and hovering anywhere else still reaches the squares.
+  // (A canvas on top would swallow every mouse event over the whole map.)
+  map.createPane('live').style.zIndex = 420;
+  map.createPane('stations').style.zIndex = 430;
   const cellRenderer = L.canvas({ padding: 0.3 });
+  const liveRenderer = L.svg({ pane: 'live' });
+  const stationRenderer = L.svg({ pane: 'stations' });
   const cellLayer = L.layerGroup().addTo(map);
   const stationLayer = L.layerGroup().addTo(map);
   const liveLayer = L.layerGroup().addTo(map);
@@ -108,13 +117,53 @@
   }
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
+  function rangeText() {
+    if (S.preset === 'custom') {
+      const { start, end } = timeRange();
+      const d = t => new Date(t * 1000).toLocaleDateString();
+      return `${d(start)} – ${d(end)}`;
+    }
+    const sel = $('preset');
+    return sel.options[sel.selectedIndex]?.text || '';
+  }
+
+  const stationName = call => {
+    if (call === '(untraced)') return 'Untraced hop';
+    const st = STATIONS.find(s => s.callsign === call);
+    return st && st.label ? `${call} · ${st.label}` : call;
+  };
+
+  // One "who / how many" list for a square tooltip, largest first.
+  function tipList(title, counts, swatches) {
+    const list = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    if (!list.length) return '';
+    const MAX = 6;
+    let html = `<div class="tip-h">${title} (${list.length})</div><table>`;
+    for (const [k, c] of list.slice(0, MAX)) {
+      const sw = swatches ? `<span class="swatch" style="background:${keyColor(k)}"></span>` : '';
+      html += `<tr><td>${sw}${esc(swatches ? stationName(k) : k)}</td><td class="num">${c.toLocaleString()}</td></tr>`;
+    }
+    html += '</table>';
+    if (list.length > MAX) html += `<div class="muted">+${list.length - MAX} more</div>`;
+    return html;
+  }
+
+  function cellTip(n, first, last, heard, mobs) {
+    const size = COVERAGE.cell_m >= 1000 ? `${COVERAGE.cell_m / 1000} km` : `${COVERAGE.cell_m} m`;
+    return `<div class="tip-top"><b>${n.toLocaleString()} packet${n === 1 ? '' : 's'}</b>
+        <span class="muted">· ${size} square</span></div>
+      <div class="muted">First ${ago(first)} · last ${ago(last)}</div>`
+      + tipList('Heard by', heard, true)
+      + tipList('Mobiles', mobs, false);
+  }
+
   function renderCells() {
     cellLayer.clearLayers();
     if (!COVERAGE) return;
     const { dlat, dlon, cells } = COVERAGE;
     const op = S.opacity / 100;
     const seenKeys = new Map();
-    for (const [x, y, n, last, by] of cells) {
+    for (const [x, y, n, last, by, heard, mobs, first] of cells) {
       let color = S.singleColor, dominant = null;
       const entries = Object.entries(by).sort((a, b) => b[1] - a[1]);
       if (S.color !== 'single' && entries.length) {
@@ -127,13 +176,7 @@
         renderer: cellRenderer, color, weight: S.borders ? 0.6 : 0, opacity: S.borders ? Math.min(1, op + 0.2) : 0,
         fillColor: color, fillOpacity: op * shadeFactor(n),
       });
-      let tip = `<b>${n} packet${n === 1 ? '' : 's'}</b> · last ${ago(last)}`;
-      if (entries.length) {
-        tip += '<br>' + entries.slice(0, 6).map(([k, c]) =>
-          `<span class="swatch" style="background:${keyColor(k)}"></span> ${esc(k)}: ${c}`).join('<br>');
-        if (entries.length > 6) tip += `<br>+${entries.length - 6} more`;
-      }
-      rect.bindTooltip(tip, { className: 'cell-tip', sticky: true });
+      rect.bindTooltip(() => cellTip(n, first, last, heard, mobs), { className: 'cell-tip', sticky: true });
       cellLayer.addLayer(rect);
     }
     renderLegend(seenKeys);
@@ -160,6 +203,32 @@
     el.hidden = !html;
   }
 
+  const KIND_NAME = { igate: 'Igate', digi: 'Digipeater', digi_igate: 'Digi + igate' };
+
+  function stationCard(s, color) {
+    const st = (STATS && STATS.infra.find(r => r.callsign === s.callsign)) || null;
+    const n = v => (v ?? 0).toLocaleString();
+    const row = (k, v) => `<tr><th>${k}</th><td>${v}</td></tr>`;
+    let html = `<div class="station-card">
+      <div class="sc-head"><span class="swatch" style="background:${color}"></span>
+        <b>${esc(s.callsign)}</b> <span class="muted">${KIND_NAME[s.kind] || ''}</span></div>`;
+    if (s.label) html += `<div class="sc-label">${esc(s.label)}</div>`;
+    html += `<div class="sc-range muted">${esc(rangeText())}</div><table>`;
+    if (!st) {
+      html += row('Stats', STATS ? 'none in this range' : 'loading…');
+    } else {
+      html += row('Heard direct', `${n(st.heard_direct)} packet${st.heard_direct === 1 ? '' : 's'}`)
+        + row('Squares covered', n(st.cells))
+        + row('Mobiles heard', n(st.mobiles))
+        + row('Max range', st.max_range_km != null ? `${st.max_range_km} km` : '—');
+      if (s.kind !== 'digi') html += row('Gated to APRS-IS', n(st.gated));
+    }
+    html += row('Last heard a mobile', ago(s.last_heard))
+      + row('Own beacon', ago(s.last_beacon))
+      + '</table></div>';
+    return html;
+  }
+
   function renderStations() {
     stationLayer.clearLayers();
     if (!S.stations) return;
@@ -167,18 +236,13 @@
       if (s.kind === 'mobile' || s.lat == null) continue;
       const color = s.color || hashColor(s.callsign);
       const m = L.circleMarker([s.lat, s.lon], {
+        renderer: stationRenderer,
         radius: s.kind === 'digi' ? 6 : 8, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1,
         dashArray: s.kind === 'digi_igate' ? '3 2' : null,
       });
-      const kind = { igate: 'Igate', digi: 'Digipeater', digi_igate: 'Digi + igate' }[s.kind];
-      m.bindTooltip(`${esc(s.callsign)}${s.label ? ' — ' + esc(s.label) : ''}`);
-      m.bindPopup(() => {
-        const st = (STATS && STATS.infra.find(r => r.callsign === s.callsign)) || {};
-        return `<b>${esc(s.callsign)}</b> <span class="muted">${kind}</span>${s.label ? '<br>' + esc(s.label) : ''}
-          <br>Heard direct: ${st.heard_direct ?? '—'} · squares: ${st.cells ?? '—'}
-          <br>Max range: ${st.max_range_km != null ? st.max_range_km + ' km' : '—'} · gated: ${st.gated ?? '—'}
-          <br>Last heard a mobile: ${ago(s.last_heard)}<br>Own beacon: ${ago(s.last_beacon)}`;
-      });
+      // Built when shown, so it always reflects the latest stats and time range.
+      m.bindTooltip(() => stationCard(s, color), { className: 'station-tip', direction: 'top', offset: [0, -8] });
+      m.bindPopup(() => stationCard(s, color));
       stationLayer.addLayer(m);
     }
   }
@@ -268,7 +332,7 @@
     es.onmessage = ev => {
       let p; try { p = JSON.parse(ev.data); } catch { return; }
       if (S.live) {
-        const c = L.circleMarker([p.lat, p.lon], { radius: 7, color: keyColor(p.heard_by || '(untraced)'), weight: 2, fillOpacity: 0.9, className: 'pulse' })
+        const c = L.circleMarker([p.lat, p.lon], { renderer: liveRenderer, radius: 7, color: keyColor(p.heard_by || '(untraced)'), weight: 2, fillOpacity: 0.9, className: 'pulse' })
           .bindTooltip(`${esc(p.mobile)} via ${esc(p.heard_by || 'untraced')}${p.igate !== p.heard_by ? ' → ' + esc(p.igate) : ''}`);
         liveLayer.addLayer(c);
         setTimeout(() => liveLayer.removeLayer(c), 120000);
