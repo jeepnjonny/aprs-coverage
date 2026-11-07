@@ -1,6 +1,6 @@
 from app.packets import LastFix, Registry, evaluate, is_alias, route_from_path
 
-REG = Registry(mobile_patterns=["K7ABC-9", "W7MOB*"], infra={"K7SWI-1", "KG7KMV-10"})
+REG = Registry(mobile_patterns=["K7ABC-9", "W7MOB*", "K7SWI:CAR*"], infra={"K7SWI-1", "KG7KMV-10"})
 POS = "=4336.66N/11612.40W>test"
 
 
@@ -89,4 +89,33 @@ def test_infra_beacon_updates_position():
 
 
 def test_filter_string():
-    assert REG.aprs_filter() == "b/K7ABC-9/K7SWI-1/KG7KMV-10/W7MOB*"
+    assert REG.aprs_filter() == "b/K7ABC-9/K7SWI/K7SWI-1/KG7KMV-10/W7MOB*"
+
+
+OBJ = "K7SWI>APLRT1,WIDE1-1,WIDE2-2,qAR,KG7KMV-13:;CAR01    *071954z/8KTT1+Co>,CE/A=002808"
+
+
+def test_object_tracker_accepted():
+    o = ev(OBJ)
+    assert o.kind == "accept" and o.source == "K7SWI:CAR01"
+    assert o.record["mobile"] == "K7SWI:CAR01" and o.record["heard_by"] == "KG7KMV-13"
+    assert abs(o.record["lat"] - 43.5746) < 0.001
+
+
+def test_object_from_other_sender_or_name_ignored():
+    assert ev(OBJ.replace("K7SWI>", "N0XYZ>")).kind == "ignore"
+    assert ev(OBJ.replace(";CAR01   ", ";TRUCK01 ")).kind == "ignore"
+
+
+def test_object_kill_ignored():
+    assert ev(OBJ.replace("    *0719", "    _0719")).kind == "ignore"
+
+
+def test_callsign_wildcard_does_not_match_objects():
+    reg = Registry(mobile_patterns=["K7SWI*"])
+    assert evaluate(OBJ, 1_000_000, reg, {}).kind == "ignore"
+    assert not reg.is_mobile("K7SWI:CAR01")
+
+
+def test_object_filter_uses_sender():
+    assert Registry(mobile_patterns=["K7SWI:CAR*", "K7ABC-9"]).aprs_filter() == "b/K7ABC-9/K7SWI"

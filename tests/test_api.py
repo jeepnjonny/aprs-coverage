@@ -141,3 +141,28 @@ def test_pages_and_static_revalidate(client):
         assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
     etag = client.get("/static/map.js").headers["etag"]
     assert client.get("/static/map.js", headers={"If-None-Match": etag}).status_code == 304
+
+
+def test_object_tracker_station(client):
+    login(client)
+    for body in ({"callsign": "k7abc:car01", "kind": "mobile"},
+                 {"callsign": "K7ABC*", "kind": "mobile"}):
+        assert client.post("/api/admin/stations", json=body, headers=H).status_code == 200
+    assert client.post("/api/admin/stations", json={"callsign": "K7ABC:CAR 01", "kind": "mobile"},
+                       headers=H).status_code == 422
+    assert client.post("/api/admin/stations", json={"callsign": "K7ABC:CAR01", "kind": "igate"},
+                       headers=H).status_code == 422
+    ing, t = client.ingester, 2_000_000_000
+    assert ing.registry.aprs_filter() == "b/K7ABC/K7ABC*"
+    obj = "K7ABC>APLRT1,WIDE1-1,qAR,KG7KMV-10:;CAR01    *071954z/8KTT1+Co>,CE/A=002808"
+    assert ing.handle_line(obj, now=t) == "accept"
+    assert ing.handle_line("K7ABC-9>APRS,qAR,KG7KMV-10:=4336.66N/11612.40W>", now=t + 1) == "accept"
+    assert "K7ABC:CAR01" in client.get("/api/mobiles").json()
+
+    ids = {s["callsign"]: s["id"] for s in client.get("/api/admin/stations").json()}
+    url = lambda call: f"/api/admin/stations/{ids[call]}/packets"
+    # The callsign wildcard and the object pattern each own only their packets.
+    assert client.get(url("K7ABC*")).json() == {"count": 1}
+    assert client.get(url("K7ABC:CAR01")).json() == {"count": 1}
+    last = {s["callsign"]: s["last_heard"] for s in client.get("/api/stations").json()}
+    assert last["K7ABC:CAR01"] == t and last["K7ABC*"] == t + 1

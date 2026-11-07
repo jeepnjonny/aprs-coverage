@@ -18,6 +18,7 @@ where the local igates and digipeaters can actually hear a mobile.
 - **Read-only APRS-IS feed.** Logs in with passcode `-1`, so the coverage feed never sends anything.
   Only the admin Node config tab sends, on its own connection (below).
   It filters for the registered stations only and ignores all other traffic.
+  Trackers that report as APRS objects are registered as `SENDER:OBJECT` (`K7SWI:CAR01`).
 - **RF only.** Packets that entered APRS-IS over the internet (`qAC`, APRSdroid over
   TCP, and so on) are dropped, because they say nothing about RF coverage.
 - **Credit goes to the station that heard the mobile.** If a packet went through a

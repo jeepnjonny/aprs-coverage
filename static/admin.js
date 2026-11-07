@@ -105,7 +105,7 @@
     const mobile = $('s-kind').value === 'mobile';
     document.querySelectorAll('.infra-only').forEach(el => { el.hidden = mobile; });
     $('kind-help').textContent = mobile
-      ? 'Mobiles: use an exact callsign-SSID (K7ABC-9), or K7ABC* / K7ABC-* to cover every SSID. Packets from mobiles are what draw coverage.'
+      ? 'Mobiles: use an exact callsign-SSID (K7ABC-9), or K7ABC* / K7ABC-* to cover every SSID. For trackers that beacon as APRS objects, use SENDER:OBJECT (K7SWI:CAR01, or K7SWI:CAR* for a fleet). Packets from mobiles are what draw coverage.'
       : 'Igates/digis: exact callsign-SSID as it appears in packet paths. Leave the position blank to take it from the station’s own beacons.';
   }
   $('s-kind').addEventListener('change', kindChanged);

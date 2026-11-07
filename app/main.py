@@ -1,6 +1,5 @@
 """FastAPI app: public map API, live feed, admin API, static pages."""
 import asyncio
-import fnmatch
 import json
 import logging
 import math
@@ -15,6 +14,7 @@ from pydantic import BaseModel, field_validator
 
 from . import auth, config, db, grid, logbuf, remotecfg
 from .ingest import ingester
+from .packets import mobile_matches
 
 remote = remotecfg.RemoteConfig()
 
@@ -152,8 +152,7 @@ def api_stations():
 
 
 def _matches(call: str, pattern: str) -> bool:
-    import fnmatch
-    return fnmatch.fnmatchcase(call, pattern)
+    return mobile_matches(call, pattern)
 
 
 @app.get("/api/mobiles")
@@ -354,6 +353,9 @@ def admin_password(body: PasswordIn):
 
 CALL_RE = re.compile(r"^[A-Z0-9]{1,6}(-[A-Z0-9]{1,2})?$")
 MOBILE_RE = re.compile(r"^[A-Z0-9]{1,6}(-[A-Z0-9]{1,2}|-\*|\*)?$")
+# Object tracker: SENDER:OBJECT, e.g. K7SWI:CAR01 or K7SWI-*:CAR*. Object names
+# are up to 9 characters; spaces are not allowed here (trailing pad is stripped).
+OBJECT_RE = re.compile(r"^[A-Z0-9]{1,6}(-[A-Z0-9]{1,2}|-\*|\*)?:[A-Z0-9_./#*-]{1,9}$")
 COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
@@ -384,9 +386,13 @@ class StationIn(BaseModel):
     def check(self):
         if self.kind not in ("mobile", "igate", "digi", "digi_igate"):
             raise HTTPException(422, "kind must be mobile, igate, digi or digi_igate")
-        pattern = MOBILE_RE if self.kind == "mobile" else CALL_RE
-        if not pattern.match(self.callsign):
-            hint = " (mobiles may end in * or -* for any SSID)" if self.kind == "mobile" else ""
+        if self.kind == "mobile":
+            ok = MOBILE_RE.match(self.callsign) or OBJECT_RE.match(self.callsign)
+        else:
+            ok = CALL_RE.match(self.callsign)
+        if not ok:
+            hint = (" (mobiles may end in * or -* for any SSID; object trackers are"
+                    " SENDER:OBJECT, e.g. K7SWI:CAR01)") if self.kind == "mobile" else ""
             raise HTTPException(422, f"Invalid callsign{hint}")
         if (self.lat is None) != (self.lon is None):
             raise HTTPException(422, "Give both lat and lon, or neither")
@@ -457,7 +463,9 @@ def _station_packets(c, sid: int) -> tuple[dict, str, list]:
         raise HTTPException(404, "No such station")
     call = st["callsign"].upper()
     if st["kind"] == "mobile":
-        return dict(st), "mobile GLOB ?", [call]
+        # Keep callsign patterns and SENDER:OBJECT patterns apart, as mobile_matches does.
+        sep = "mobile GLOB '*:*'" if ":" in call else "mobile NOT GLOB '*:*'"
+        return dict(st), f"mobile GLOB ? AND {sep}", [call]
     return dict(st), "heard_by = ?", [call]
 
 
@@ -477,7 +485,7 @@ def admin_purge_station_packets(sid: int):
         # Forget the last fix too, so a changed station isn't rejected as a
         # speed jump from its old position.
         pattern = st["callsign"].upper()
-        for m in [m for m in ingester.last if fnmatch.fnmatchcase(m, pattern)]:
+        for m in [m for m in ingester.last if mobile_matches(m, pattern)]:
             ingester.last.pop(m, None)
     logging.getLogger("admin").info("purged %d packets for %s", deleted, st["callsign"])
     return {"deleted": deleted}

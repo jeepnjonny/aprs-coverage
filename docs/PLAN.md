@@ -59,6 +59,10 @@ process, so uvicorn must run with exactly one worker.
 - Packets from registered igates/digis are used only to update their own beaconed
   position for the map markers.
 - Packets from registered mobiles must carry a position, or they are ignored.
+- Trackers that beacon as APRS objects (more trackers than SSIDs) are registered as
+  `SENDER:OBJECT`, e.g. `K7SWI:CAR01` or `K7SWI:CAR*`. The filter subscribes to the
+  sender, and only objects with a matching name from that sender count; the packet is
+  stored under the `SENDER:OBJECT` key. Plain callsign patterns never match objects.
 
 ### Coverage attribution
 

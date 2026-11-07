@@ -91,17 +91,39 @@ class LastFix:
     heard_by: str | None
 
 
+def mobile_matches(key: str, pattern: str) -> bool:
+    """Match a mobile key against a registered pattern. Plain patterns (K7ABC*)
+    match only callsigns; SENDER:OBJECT patterns match only object keys, so a
+    callsign wildcard never pulls in objects that station sends."""
+    k, p = key.upper(), pattern.upper()
+    if (":" in k) != (":" in p):
+        return False
+    return fnmatch.fnmatchcase(k, p)
+
+
+def object_key(sender: str, name: str) -> str:
+    """Mobile key for an APRS object: 'K7SWI:CAR01'."""
+    return f"{sender.upper()}:{name.strip().upper()}"
+
+
 @dataclass
 class Registry:
+    # Plain callsign patterns (K7ABC-9, K7ABC*) and object patterns (K7SWI:CAR01).
     mobile_patterns: list[str] = field(default_factory=list)
     infra: set[str] = field(default_factory=set)
 
     def is_mobile(self, call: str) -> bool:
+        return any(mobile_matches(call, p) for p in self.mobile_patterns)
+
+    def is_object_sender(self, call: str) -> bool:
         c = call.upper()
-        return any(fnmatch.fnmatchcase(c, p) for p in self.mobile_patterns)
+        return any(fnmatch.fnmatchcase(c, p.split(":", 1)[0])
+                   for p in self.mobile_patterns if ":" in p)
 
     def aprs_filter(self) -> str:
-        calls = sorted(set(self.mobile_patterns) | self.infra)
+        # b/ matches the sending station, so object trackers subscribe by sender.
+        senders = {p.split(":", 1)[0] for p in self.mobile_patterns}
+        calls = sorted(senders | self.infra)
         return ("b/" + "/".join(calls)) if calls else ""
 
 
@@ -121,7 +143,7 @@ def evaluate(line: str, now: int, registry: Registry, last: dict[str, LastFix]) 
         pkt = aprslib.parse(line)
     except Exception:  # aprslib raises several exception types
         src = line.split(">", 1)[0] if ">" in line else ""
-        if src and registry.is_mobile(src):
+        if src and (registry.is_mobile(src) or registry.is_object_sender(src)):
             return Outcome("reject", "unparseable", src)
         return Outcome("ignore")
 
@@ -129,16 +151,24 @@ def evaluate(line: str, now: int, registry: Registry, last: dict[str, LastFix]) 
     fmt = pkt.get("format")
     has_pos = fmt in POSITION_FORMATS and "latitude" in pkt and "longitude" in pkt
 
-    if src in registry.infra and not registry.is_mobile(src):
+    if fmt == "object":
+        # A tracker reporting itself as an object: credit the object, keyed by
+        # sender so nobody else can move it by sending the same name.
+        key = object_key(src, pkt.get("object_name", ""))
+        if not registry.is_mobile(key) or not pkt.get("alive", True):
+            return Outcome("ignore")  # unregistered object, or a kill
+        if "latitude" not in pkt or "longitude" not in pkt:
+            return Outcome("ignore")
+        src = key
+    elif src in registry.infra and not registry.is_mobile(src):
         if has_pos and pkt.get("posambiguity", 0) == 0:
             return Outcome("infra", source=src,
                            record={"lat": pkt["latitude"], "lon": pkt["longitude"], "ts": now})
         return Outcome("ignore")
-
-    if not registry.is_mobile(src):
+    elif not registry.is_mobile(src):
         return Outcome("ignore")
-    if not has_pos:
-        return Outcome("ignore")  # status, telemetry, messages, objects, items
+    elif not has_pos:
+        return Outcome("ignore")  # status, telemetry, messages, other objects, items
 
     def reject(reason):
         return Outcome("reject", reason, src)
