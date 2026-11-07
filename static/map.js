@@ -97,7 +97,7 @@
   }
   function keyColor(key) {
     if (key === '(untraced)') return '#8b949e';
-    const st = STATIONS.find(s => s.callsign === key);
+    const st = findStation(key);  // wildcard / object registrations keep their colour
     return (st && st.color) || hashColor(key);
   }
   const shadeFactor = n => {
@@ -129,12 +129,23 @@
 
   // Registered callsigns may be wildcards (K7ABC*, K7ABC-?), like the server's fnmatch.
   const globRe = p => new RegExp('^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
-  // The station's label if it has one, otherwise just the callsign.
+  // As on the server, callsign patterns never match SENDER:OBJECT keys and vice versa.
+  const patternMatches = (pattern, call) =>
+    pattern.includes(':') === call.includes(':') && globRe(pattern).test(call);
+  const findStation = call => STATIONS.find(s => s.callsign === call)
+    || STATIONS.find(s => /[*?]/.test(s.callsign) && patternMatches(s.callsign, call));
+  // The station's label if it has one, otherwise just the callsign. Use this
+  // wherever a station is shown; the callsign goes in a hover title instead.
   const stationName = call => {
-    if (call === '(untraced)') return 'Untraced hop';
-    const st = STATIONS.find(s => s.callsign === call)
-      || STATIONS.find(s => /[*?]/.test(s.callsign) && globRe(s.callsign).test(call));
+    if (!call || call === '(untraced)') return 'Untraced hop';
+    const st = findStation(call);
     return st && st.label ? st.label : call;
+  };
+  // Escaped name for HTML, with the callsign on hover when a label replaced it.
+  const nameHtml = call => {
+    const name = stationName(call);
+    return name === call || !call || call === '(untraced)'
+      ? esc(name) : `<span title="${esc(call)}">${esc(name)}</span>`;
   };
 
   // One "who / how many" list for a square tooltip, largest first.
@@ -145,7 +156,7 @@
     let html = `<div class="tip-h">${title} (${list.length})</div><table>`;
     for (const [k, c] of list.slice(0, MAX)) {
       const sw = swatches ? `<span class="swatch" style="background:${keyColor(k)}"></span>` : '';
-      html += `<tr><td>${sw}${esc(stationName(k))}</td><td class="num">${c.toLocaleString()}</td></tr>`;
+      html += `<tr><td>${sw}${nameHtml(k)}</td><td class="num">${c.toLocaleString()}</td></tr>`;
     }
     html += '</table>';
     if (list.length > MAX) html += `<div class="muted">+${list.length - MAX} more</div>`;
@@ -201,7 +212,7 @@
     if (S.color !== 'single') {
       html += `<h3>${S.color === 'heard_by' ? 'Heard by' : 'Mobile'}</h3>` +
         [...keys.entries()].sort((a, b) => b[1] - a[1]).map(([k]) =>
-          `<div class="row"><span class="swatch" style="background:${keyColor(k)}"></span>${esc(k)}</div>`).join('');
+          `<div class="row"><span class="swatch" style="background:${keyColor(k)}"></span>${nameHtml(k)}</div>`).join('');
     }
     el.innerHTML = html;
     el.hidden = !html;
@@ -215,8 +226,8 @@
     const row = (k, v) => `<tr><th>${k}</th><td>${v}</td></tr>`;
     let html = `<div class="station-card">
       <div class="sc-head"><span class="swatch" style="background:${color}"></span>
-        <b>${esc(s.callsign)}</b> <span class="muted">${KIND_NAME[s.kind] || ''}</span></div>`;
-    if (s.label) html += `<div class="sc-label">${esc(s.label)}</div>`;
+        <b>${esc(s.label || s.callsign)}</b> <span class="muted">${KIND_NAME[s.kind] || ''}</span></div>`;
+    if (s.label) html += `<div class="sc-label">${esc(s.callsign)}</div>`;
     html += `<div class="sc-range muted">${esc(rangeText())}</div><table>`;
     if (!st) {
       html += row('Stats', STATS ? 'none in this range' : 'loading…');
@@ -266,6 +277,7 @@
       lab.append(cb);
       if (it.color) { const sw = document.createElement('span'); sw.className = 'swatch'; sw.style.background = it.color; lab.append(sw); }
       lab.append(document.createTextNode(it.label));
+      if (it.title) lab.title = it.title;
       if (it.meta) { const m = document.createElement('span'); m.className = 'meta'; m.textContent = it.meta; lab.append(m); }
       el.append(lab);
     }
@@ -277,12 +289,13 @@
   }
 
   function buildFilters() {
-    buildCheckList($('mobiles-list'), MOBILES.map(m => ({ value: m, label: m, color: S.color === 'mobile' ? keyColor(m) : null })),
+    buildCheckList($('mobiles-list'), MOBILES.map(m => ({ value: m, label: stationName(m), title: m, color: S.color === 'mobile' ? keyColor(m) : null }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
       S.mobiles, () => { S.mobiles = readCheckList($('mobiles-list')); save(); refresh(); });
     const infra = STATIONS.filter(s => s.kind !== 'mobile').map(s => ({
-      value: s.callsign, label: s.callsign + (s.label ? ` — ${s.label}` : ''), color: keyColor(s.callsign),
+      value: s.callsign, label: s.label || s.callsign, title: s.callsign, color: keyColor(s.callsign),
       meta: { igate: 'igate', digi: 'digi', digi_igate: 'digi+ig' }[s.kind],
-    }));
+    })).sort((a, b) => a.label.localeCompare(b.label));
     infra.push({ value: OTHER, label: 'Other (unregistered stations)' });
     infra.push({ value: UNTRACED, label: 'Untraced digi hop (unknown)', color: '#8b949e' });
     buildCheckList($('heard-list'), infra, S.heard, () => { S.heard = readCheckList($('heard-list')); save(); refresh(); });
@@ -295,9 +308,8 @@
     const tb = $('infra-stats').querySelector('tbody');
     tb.innerHTML = STATS.infra.map(r => {
       const st = byCall[r.callsign];
-      const name = r.callsign === '(untraced)' ? 'Untraced hop' : r.callsign;
       return `<tr class="${st && st.lat != null ? 'clickable' : ''}" data-call="${esc(r.callsign)}">
-        <td><span class="swatch" style="background:${keyColor(r.callsign)}"></span> ${esc(name)}${r.registered ? '' : ' <span class="muted">*</span>'}</td>
+        <td><span class="swatch" style="background:${keyColor(r.callsign)}"></span> ${nameHtml(r.callsign)}${r.registered ? '' : ' <span class="muted">*</span>'}</td>
         <td>${r.heard_direct}</td><td>${r.cells}</td><td>${r.max_range_km ?? '—'}</td><td>${r.gated}</td><td>${ago(r.last_heard)}</td></tr>`;
     }).join('') || '<tr><td colspan="6" class="muted">No packets in range.</td></tr>';
     tb.querySelectorAll('tr.clickable').forEach(tr => tr.addEventListener('click', () => {
@@ -305,7 +317,7 @@
       if (st) map.flyTo([st.lat, st.lon], Math.max(map.getZoom(), 12));
     }));
     $('mobile-stats').querySelector('tbody').innerHTML = STATS.mobiles.map(r =>
-      `<tr><td>${esc(r.mobile)}</td><td>${r.packets}</td><td>${r.cells}</td><td>${ago(r.last)}</td></tr>`).join('')
+      `<tr><td>${nameHtml(r.mobile)}</td><td>${r.packets}</td><td>${r.cells}</td><td>${ago(r.last)}</td></tr>`).join('')
       || '<tr><td colspan="4" class="muted">No packets in range.</td></tr>';
   }
 
@@ -337,13 +349,13 @@
       let p; try { p = JSON.parse(ev.data); } catch { return; }
       if (S.live) {
         const c = L.circleMarker([p.lat, p.lon], { renderer: liveRenderer, radius: 7, color: keyColor(p.heard_by || '(untraced)'), weight: 2, fillOpacity: 0.9, className: 'pulse' })
-          .bindTooltip(`${esc(p.mobile)} via ${esc(p.heard_by || 'untraced')}${p.igate !== p.heard_by ? ' → ' + esc(p.igate) : ''}`);
+          .bindTooltip(`${esc(stationName(p.mobile))} via ${p.heard_by ? esc(stationName(p.heard_by)) : 'untraced hop'}${p.igate !== p.heard_by ? ' → ' + esc(stationName(p.igate)) : ''}`);
         liveLayer.addLayer(c);
         setTimeout(() => liveLayer.removeLayer(c), 120000);
       }
       if (!MOBILES.includes(p.mobile)) { MOBILES.push(p.mobile); MOBILES.sort(); buildFilters(); }
       if (isRelative()) { clearTimeout(liveTimer); liveTimer = setTimeout(refresh, 2500); }
-      setLive('ok', 'live · ' + p.mobile);
+      setLive('ok', 'live · ' + stationName(p.mobile));
     };
   }
   async function checkStatus() {
