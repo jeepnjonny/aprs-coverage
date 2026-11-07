@@ -119,3 +119,13 @@ def test_callsign_wildcard_does_not_match_objects():
 
 def test_object_filter_uses_sender():
     assert Registry(mobile_patterns=["K7SWI:CAR*", "K7ABC-9"]).aprs_filter() == "b/K7ABC-9/K7SWI"
+
+
+def test_infra_wins_over_mobile_wildcard():
+    reg = Registry(mobile_patterns=["K7SWI*"], infra={"K7SWI-10"})
+    beacon = "K7SWI-10>APRX29,TCPIP*,qAC,T2DENMARK:!4358.56NI11624.42W#Digi + iGate"
+    telem = "K7SWI-10>APRX29,TCPIP*,qAC,T2DENMARK:T#090,0.0,0.1,0.0,0.0,0.0,00000000"
+    assert evaluate(beacon, 1_000_000, reg, {}).kind == "infra"
+    assert evaluate(telem, 1_000_000, reg, {}).kind == "ignore"
+    # An unregistered SSID under the wildcard is still a mobile.
+    assert evaluate(f"K7SWI-7>APRS,qAR,KG7KMV-10:{POS}", 1_000_000, reg, {}).kind == "accept"

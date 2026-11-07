@@ -143,6 +143,8 @@ def evaluate(line: str, now: int, registry: Registry, last: dict[str, LastFix]) 
         pkt = aprslib.parse(line)
     except Exception:  # aprslib raises several exception types
         src = line.split(">", 1)[0] if ">" in line else ""
+        if src.upper() in registry.infra:
+            return Outcome("ignore")  # igate/digi telemetry etc.; not coverage data
         if src and (registry.is_mobile(src) or registry.is_object_sender(src)):
             return Outcome("reject", "unparseable", src)
         return Outcome("ignore")
@@ -160,7 +162,10 @@ def evaluate(line: str, now: int, registry: Registry, last: dict[str, LastFix]) 
         if "latitude" not in pkt or "longitude" not in pkt:
             return Outcome("ignore")
         src = key
-    elif src in registry.infra and not registry.is_mobile(src):
+    elif src in registry.infra:
+        # A registered igate/digi is never a mobile, even if a mobile wildcard
+        # (K7SWI*) also matches it. Its own beacons only place its marker, and
+        # they usually arrive over TCPIP, so the RF checks don't apply.
         if has_pos and pkt.get("posambiguity", 0) == 0:
             return Outcome("infra", source=src,
                            record={"lat": pkt["latitude"], "lon": pkt["longitude"], "ts": now})
