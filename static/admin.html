@@ -22,6 +22,12 @@
   </section>
 
   <div id="app" hidden>
+    <nav class="tabs admin-tabs" role="tablist">
+      <button class="tab active" role="tab" data-tab="stations">Stations</button>
+      <button class="tab" role="tab" data-tab="nodecfg">Node config</button>
+    </nav>
+
+    <div data-pane="stations">
     <section class="card">
       <h2>APRS-IS feed</h2>
       <dl class="kv" id="status"></dl>
@@ -81,6 +87,70 @@
         <div class="field"><button class="btn">Change</button> <span id="pw-msg"></span></div>
       </form>
     </section>
+    </div>
+
+    <div data-pane="nodecfg" hidden>
+    <section class="card">
+      <h2>Remote config</h2>
+      <div class="grid-form rc-sendas">
+        <label class="field">Send as (your callsign)
+          <input type="text" id="rc-call" autocomplete="off" autocapitalize="characters" spellcheck="false"
+            maxlength="9" placeholder="e.g. K7ABC or K7ABC-CF"></label>
+        <label class="field">APRS-IS passcode
+          <input type="text" id="rc-pass" readonly tabindex="-1" placeholder="from callsign"></label>
+      </div>
+      <p class="muted small">Commands are sent from this callsign, so use one you are licensed for. The
+        passcode is calculated from it. Use an SSID that nothing else is logged in to APRS-IS with (not your
+        igate's), or APRS-IS drops that station's connection while you send. Remembered in this browser only,
+        never on the server.</p>
+      <p id="rc-status"></p>
+      <p class="muted small">Reads and changes settings on LoRa FieldOps igates and digis with APRS messages
+        (CSR read, CSU unlock, CSW write), sent over a separate APRS-IS connection as that callsign; the
+        coverage feed stays read-only. The connection closes after 5 minutes without a command. An igate gets them over
+        its own APRS-IS connection. A digi gets them only if an igate with IS-to-RF downlink has heard it directly
+        in the last 30 minutes. The node must have remote config turned on (serial <code>remotecfg on</code>), and
+        writes need its unlock token. Each command can take up to 45 s, and only one runs at a time.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Node</th><th>Type</th><th>Role</th><th>Last read</th><th></th></tr></thead>
+        <tbody id="rc-nodes"></tbody>
+      </table></div>
+    </section>
+
+    <section class="card" id="rc-node" hidden>
+      <div class="rc-head">
+        <h2 id="rc-title"></h2>
+        <button class="btn" id="rc-read">Read from node</button>
+      </div>
+      <p class="muted small" id="rc-read-at"></p>
+      <form id="rc-form" autocomplete="off">
+        <div class="table-wrap"><table class="rc-fields">
+          <thead><tr><th>Setting</th><th>On node</th><th>New value</th></tr></thead>
+          <tbody id="rc-fields"></tbody>
+        </table></div>
+        <p class="muted small">Changing the role or GPS source reboots the node about 5 s after it replies.
+          Fixed latitude, longitude and elevation are accepted only when the GPS source is (or is being set to)
+          Fixed position. Only changed settings are sent.</p>
+        <div class="rc-unlock">
+          <label class="field">Unlock token <input type="password" id="rc-token" autocomplete="off"
+            placeholder="not stored"></label>
+          <button type="button" class="btn secondary" id="rc-unlock">Unlock</button>
+          <span id="rc-lock" class="muted small"></span>
+        </div>
+        <button class="btn" id="rc-write">Write changes</button>
+        <button type="button" class="btn secondary" id="rc-reset">Reset form</button>
+      </form>
+      <p id="rc-msg" aria-live="polite"></p>
+    </section>
+
+    <section class="card">
+      <h2>Activity</h2>
+      <p class="muted small">Newest 50 commands and replies. Unlock tokens are not logged.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Time</th><th>Node</th><th>Sent</th><th>Result</th><th>Reply</th></tr></thead>
+        <tbody id="rc-log"></tbody>
+      </table></div>
+    </section>
+    </div>
   </div>
 </main>
 <script src="static/admin.js"></script>

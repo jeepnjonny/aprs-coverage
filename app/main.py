@@ -13,8 +13,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
-from . import auth, config, db, grid
+from . import auth, config, db, grid, remotecfg
 from .ingest import ingester
+
+remote = remotecfg.RemoteConfig()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 STATIC = config.BASE_DIR / "static"
@@ -26,6 +28,7 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(ingester.run())
     yield
     task.cancel()
+    await remote.sender.close()
 
 
 app = FastAPI(title="APRS Coverage", lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -490,3 +493,83 @@ def admin_status():
 def admin_rejects(limit: int = Query(200, ge=1, le=2000)):
     with db.session() as c:
         return [dict(r) for r in c.execute("SELECT * FROM rejects ORDER BY id DESC LIMIT ?", (limit,))]
+
+
+# ── remote node config (admin "Node config" tab) ─────────────────────────────
+# The operator's sending callsign comes with every request (the page keeps it in
+# the browser); the server never stores it, and computes its passcode itself.
+def _config_node(callsign: str) -> str:
+    """Only active, registered igates/digis can be configured."""
+    call = callsign.strip().upper()
+    with db.session() as c:
+        row = c.execute(
+            "SELECT callsign FROM stations WHERE callsign=? AND kind != 'mobile' AND active=1", (call,)
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, f"{call} is not an active registered igate or digi")
+    return row["callsign"]
+
+
+def _login(login: str) -> str:
+    """Refuse a sending callsign that a station here is already logged in to
+    APRS-IS with: the server would drop that station's connection."""
+    with db.session() as c:
+        reserved = {r[0] for r in c.execute("SELECT callsign FROM stations WHERE kind != 'mobile'")}
+    if config.APRS_LOGIN:
+        reserved.add(config.APRS_LOGIN)
+    try:
+        return remotecfg.check_login(login, reserved)
+    except remotecfg.CommandError as e:
+        raise HTTPException(e.status, str(e))
+
+
+async def _remote_call(coro):
+    try:
+        return await coro
+    except remotecfg.CommandError as e:
+        raise HTTPException(e.status, str(e))
+
+
+@app.get("/api/admin/remote", dependencies=[Depends(auth.require_admin)])
+def admin_remote(login: str | None = None):
+    with db.session() as c:
+        nodes = [dict(r) for r in c.execute(
+            """SELECT s.callsign, s.kind, s.label, n.fields, n.updated_at FROM stations s
+               LEFT JOIN node_config n ON n.callsign = s.callsign
+               WHERE s.kind != 'mobile' AND s.active=1 ORDER BY s.callsign""")]
+        logs = [dict(r) for r in c.execute("SELECT * FROM node_config_log ORDER BY id DESC LIMIT 50")]
+    for n in nodes:
+        n["fields"] = json.loads(n["fields"]) if n["fields"] else {}
+    login = (login or "").strip().upper() or None
+    return {"status": remote.status(login), "fields": remotecfg.FIELDS, "nodes": nodes, "log": logs}
+
+
+class RemoteIn(BaseModel):
+    login: str
+
+
+class RemoteReadIn(RemoteIn):
+    codes: list[str] | None = None
+
+
+class RemoteUnlockIn(RemoteIn):
+    token: str
+
+
+class RemoteWriteIn(RemoteIn):
+    fields: dict[str, str | int | float]
+
+
+@app.post("/api/admin/remote/{callsign}/read", dependencies=[Depends(auth.require_admin)])
+async def admin_remote_read(callsign: str, body: RemoteReadIn):
+    return await _remote_call(remote.read(_login(body.login), _config_node(callsign), body.codes))
+
+
+@app.post("/api/admin/remote/{callsign}/unlock", dependencies=[Depends(auth.require_admin)])
+async def admin_remote_unlock(callsign: str, body: RemoteUnlockIn):
+    return await _remote_call(remote.unlock(_login(body.login), _config_node(callsign), body.token))
+
+
+@app.post("/api/admin/remote/{callsign}/write", dependencies=[Depends(auth.require_admin)])
+async def admin_remote_write(callsign: str, body: RemoteWriteIn):
+    return await _remote_call(remote.write(_login(body.login), _config_node(callsign), body.fields))

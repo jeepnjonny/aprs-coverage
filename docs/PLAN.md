@@ -51,7 +51,8 @@ process, so uvicorn must run with exactly one worker.
 
 ## APRS-IS ingest (`app/ingest.py`, `app/packets.py`)
 
-- Logs in read-only as `APRS_LOGIN` with passcode `-1`. Nothing is ever transmitted.
+- Logs in read-only as `APRS_LOGIN` with passcode `-1`. This connection never transmits;
+  remote node config (below) sends on a separate connection.
 - Server-side filter `b/` built from every active registered station. Mobiles may use a
   trailing `*` to match every SSID. When the admin changes the list, the new filter
   is sent live with `#filter`, without reconnecting.
@@ -122,6 +123,40 @@ every square boundary.
 - APRS-IS feed status: connected, active filter, server banner, counters, last packet.
 - Recent rejected packets with their reasons.
 - Change the password from the page, or on the server with `python -m app.manage set-password`.
+
+## Remote node config (`app/remotecfg.py`, admin "Node config" tab)
+
+Reads and changes settings on active registered igates/digis that run the LoRa FieldOps
+firmware, with the directed-message protocol in its `src/remote_cfg_utils.cpp`:
+`CSR [codes]` reads (no auth), `CSU <token>` opens a timed write window for our login,
+`CSW CODE=value,...` writes (all-or-nothing). The node answers with a message `CS ...`.
+
+- Sent from the operator's own callsign, typed on the tab. The page keeps it in the
+  browser's localStorage (per browser, across admin logins, not tied to the admin account,
+  and not sent with every request as a cookie would be) and sends it with each command.
+  The server never stores it. It must look like an amateur callsign, and may not be
+  `APRS_LOGIN` or a registered igate/digi: APRS-IS drops the older connection when a
+  callsign logs in twice.
+- The server calculates the standard APRS-IS passcode (shown read-only on the page too)
+  and opens a separate connection as that callsign with filter `g/<callsign>`, so node
+  replies arrive on it. A login the server doesn't verify fails the command. The
+  connection closes after 5 minutes without a command. The coverage feed is untouched.
+- Rate limits, duplicate tracking and unlock windows are kept per (callsign, node),
+  because the firmware applies them per sender.
+- Commands are sent over APRS-IS. An igate gets them over its own connection; a digi only
+  if an igate with IS-to-RF downlink has heard it directly in the last 30 minutes.
+- One command in flight at a time. A command is resent every 12 s (same message number,
+  at most 3 times) until the node acks it, with a 45 s limit to stay under nginx's 60 s
+  proxy timeout. The node's reply is acked.
+- The firmware answers `ERR TOOFAST` to commands under 3 s apart, so we wait 3.5 s
+  between commands to one node. It also acks but ignores the same text from us within
+  60 s, so an exact repeat is refused with a wait time. A second full read is sent as
+  `CSR RO,TC,...` instead of `CSR` to get round this.
+- Ack without a reply means remote config is off at the node (or the 60 s repeat filter).
+- Values are checked against the firmware's rules before sending. Only a one-hop beacon
+  path can be written, because the protocol separates fields with commas.
+- The last reported values per node (`node_config`) and a log of commands and replies
+  (`node_config_log`, tokens masked) are stored. Tokens are never stored.
 
 ## Status
 

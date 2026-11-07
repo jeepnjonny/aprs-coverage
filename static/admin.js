@@ -22,7 +22,7 @@
   }
 
   function showLogin() { $('login-card').hidden = false; $('app').hidden = true; $('logout').hidden = true; $('password').focus(); }
-  function showApp() { $('login-card').hidden = true; $('app').hidden = false; $('logout').hidden = false; loadAll(); }
+  function showApp() { $('login-card').hidden = true; $('app').hidden = false; $('logout').hidden = false; loadAll(); showTab(location.hash === '#nodecfg' ? 'nodecfg' : 'stations'); }
 
   $('login-form').addEventListener('submit', async e => {
     e.preventDefault();
@@ -208,6 +208,252 @@
     loadStatus().catch(() => {});
     loadStations().catch(() => {});
     loadRejects().catch(() => {});
+  }
+
+  // ── tabs ──────────────────────────────────────────────────────────────────
+  function showTab(name) {
+    document.querySelectorAll('.admin-tabs .tab').forEach(b => {
+      b.classList.toggle('active', b.dataset.tab === name);
+      b.setAttribute('aria-selected', b.dataset.tab === name);
+    });
+    document.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.dataset.pane !== name; });
+    try { history.replaceState(null, '', name === 'stations' ? location.pathname + location.search : `#${name}`); } catch { /* ignore */ }
+    if (name === 'nodecfg') loadRemote().catch(e => rcMsg(e.message, 'error'));
+  }
+  document.querySelectorAll('.admin-tabs .tab').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+  const activeTab = () => document.querySelector('.admin-tabs .tab.active')?.dataset.tab;
+
+  // ── node config ───────────────────────────────────────────────────────────
+  const rc = { fields: {}, nodes: [], status: {}, selected: null, busy: false, unlockAt: {} };
+  const NUMERIC = new Set(['int', 'float']);
+  const node = () => rc.nodes.find(n => n.callsign === rc.selected);
+
+  // Sending callsign: kept in this browser only (localStorage), sent with each
+  // command. The server checks it and computes the passcode itself; the one
+  // shown here uses the same standard APRS-IS hash.
+  const CALL_KEY = 'acov.nodecfg.callsign';
+  const CALL_RE = /^[A-Z0-9]{1,2}[0-9][A-Z]{1,4}(-[A-Z0-9]{1,2})?$/;
+  function aprsPasscode(call) {
+    const base = call.toUpperCase().split('-')[0].slice(0, 10);
+    let h = 0x73e2;
+    for (let i = 0; i < base.length; i += 2) {
+      h ^= base.charCodeAt(i) << 8;
+      if (i + 1 < base.length) h ^= base.charCodeAt(i + 1);
+    }
+    return h & 0x7fff;
+  }
+  const sendAs = () => { const c = $('rc-call').value.trim().toUpperCase(); return CALL_RE.test(c) ? c : ''; };
+  function callChanged() {
+    const raw = $('rc-call').value.trim().toUpperCase();
+    const ok = CALL_RE.test(raw);
+    $('rc-pass').value = ok ? aprsPasscode(raw) : '';
+    $('rc-call').setCustomValidity(raw && !ok ? 'Callsign like K7ABC or K7ABC-CF' : '');
+    try { ok ? localStorage.setItem(CALL_KEY, raw) : raw || localStorage.removeItem(CALL_KEY); } catch { /* storage blocked */ }
+    updateButtons();
+  }
+  try { $('rc-call').value = localStorage.getItem(CALL_KEY) || ''; } catch { /* storage blocked */ }
+  $('rc-call').addEventListener('input', callChanged);
+  $('rc-call').addEventListener('change', () => { $('rc-call').value = $('rc-call').value.trim().toUpperCase(); callChanged(); loadRemote().catch(() => {}); });
+  callChanged();
+
+  function rcMsg(text, cls) { const m = $('rc-msg'); m.className = cls || ''; m.textContent = text; }
+
+  async function loadRemote() {
+    const call = sendAs();
+    const d = await api('GET', `api/admin/remote${call ? `?login=${encodeURIComponent(call)}` : ''}`);
+    rc.fields = d.fields; rc.nodes = d.nodes; rc.status = d.status;
+    rc.unlockAt = {};
+    for (const [call, secs] of Object.entries(d.status.unlocked)) rc.unlockAt[call] = Date.now() + secs * 1000;
+    if (rc.selected && !node()) rc.selected = null;
+    const conn = d.status.connection;
+    $('rc-status').innerHTML = [
+      !call ? '<span class="warnmsg">Enter your callsign to send commands.</span>'
+        : conn.login ? `<span class="okmsg">Connected to APRS-IS as ${esc(conn.login)}</span> <span class="muted small">${esc(conn.server_line)}</span>`
+        : `<span class="muted">Connects to ${esc(d.status.server)} as ${esc(call)} on the first command.</span>`,
+      d.status.busy ? `<span class="warnmsg">Waiting on ${esc(d.status.busy)}.</span>` : '',
+    ].join(' ');
+    renderNodes();
+    renderLog(d.log);
+    renderNode(false);
+  }
+
+  function roleName(n) {
+    const ro = n.fields.RO;
+    return ro == null ? '<span class="muted">not read</span>' : esc(rc.fields.RO.values[ro] ?? ro);
+  }
+
+  function renderNodes() {
+    $('rc-nodes').innerHTML = rc.nodes.map(n => `<tr class="${n.callsign === rc.selected ? 'selected' : ''}">
+        <td><b>${esc(n.callsign)}</b>${n.label ? `<br><span class="muted small">${esc(n.label)}</span>` : ''}</td>
+        <td>${KIND[n.kind]}</td><td>${roleName(n)}</td><td>${fmt(n.updated_at)}</td>
+        <td class="actions"><button class="btn secondary" data-rc="${esc(n.callsign)}">${n.callsign === rc.selected ? 'Selected' : 'Configure'}</button></td>
+      </tr>`).join('')
+      || '<tr><td colspan="5" class="muted">No active igates or digis. Register them on the Stations tab.</td></tr>';
+    document.querySelectorAll('[data-rc]').forEach(b => b.addEventListener('click', () => selectNode(b.dataset.rc)));
+  }
+
+  function selectNode(call) {
+    if (rc.busy) return;
+    rc.selected = call;
+    $('rc-token').value = '';
+    rcMsg('');
+    renderNodes();
+    renderNode(true);
+    $('rc-node').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function inputFor(code, spec, value) {
+    const v = value ?? '';
+    if (spec.type === 'enum') {
+      const opts = Object.entries(spec.values).map(([k, label]) =>
+        `<option value="${esc(k)}"${k === String(v) ? ' selected' : ''}>${esc(label)} (${esc(k)})</option>`).join('');
+      return `<select data-code="${code}">${v === '' ? '<option value="" selected>—</option>' : ''}${opts}</select>`;
+    }
+    const attrs = spec.type === 'int' ? `type="number" step="1" min="${spec.min}" max="${spec.max}"`
+      : spec.type === 'float' ? `type="number" step="any" min="${spec.min}" max="${spec.max}"`
+      : `type="text" maxlength="${spec.max_len || 9}"`;
+    return `<input ${attrs} data-code="${code}" value="${esc(v)}" placeholder="${esc(spec.help || '')}">`;
+  }
+
+  function shown(code, value) {
+    if (value == null) return '<span class="muted">?</span>';
+    const spec = rc.fields[code];
+    if (spec.type === 'enum') return `${esc(spec.values[value] ?? value)} <span class="muted">(${esc(value)})</span>`;
+    return value === '' ? '<span class="muted">(empty)</span>' : `<code>${esc(value)}</code>`;
+  }
+
+  // Rebuild the inputs (resetInputs) or only refresh the "On node" column,
+  // keeping whatever the admin has typed.
+  function renderNode(resetInputs) {
+    const n = node();
+    $('rc-node').hidden = !n;
+    if (!n) return;
+    $('rc-title').textContent = `${n.callsign}${n.label ? ` · ${n.label}` : ''}`;
+    $('rc-read-at').textContent = n.updated_at
+      ? `Values last reported by the node ${fmt(n.updated_at)}.`
+      : 'Not read yet. Read the node first so changes are made against its current settings.';
+    if (resetInputs || !$('rc-fields').children.length) {
+      $('rc-fields').innerHTML = Object.entries(rc.fields).map(([code, spec]) => `<tr data-row="${code}">
+          <td>${esc(spec.label)} <span class="muted small">${code}</span>${spec.reboot ? '<br><span class="reboot">reboots node</span>' : ''}</td>
+          <td data-cur="${code}"></td>
+          <td>${inputFor(code, spec, n.fields[code])}</td>
+        </tr>`).join('');
+      $('rc-fields').querySelectorAll('[data-code]').forEach(el => {
+        el.addEventListener('input', markChanged);
+        el.addEventListener('change', markChanged);
+      });
+    }
+    for (const code of Object.keys(rc.fields)) {
+      $('rc-fields').querySelector(`[data-cur="${code}"]`).innerHTML = shown(code, n.fields[code]);
+    }
+    markChanged();
+    updateLock();
+    updateButtons();
+  }
+
+  function isChanged(code, value) {
+    const cur = node()?.fields[code];
+    if (cur == null) return value !== '';
+    if (NUMERIC.has(rc.fields[code].type)) return value !== '' && Number(value) !== Number(cur);
+    return value !== String(cur);
+  }
+
+  function changes() {
+    const out = {};
+    $('rc-fields').querySelectorAll('[data-code]').forEach(el => {
+      const v = el.value.trim();
+      if (isChanged(el.dataset.code, v)) out[el.dataset.code] = v;
+    });
+    return out;
+  }
+
+  function markChanged() {
+    const ch = changes();
+    $('rc-fields').querySelectorAll('tr[data-row]').forEach(tr => tr.classList.toggle('changed', tr.dataset.row in ch));
+    const n = Object.keys(ch).length;
+    $('rc-write').textContent = n ? `Write ${n} change${n > 1 ? 's' : ''}` : 'Write changes';
+  }
+
+  function unlockedFor() {
+    const at = rc.unlockAt[rc.selected];
+    return at && at > Date.now() ? Math.round((at - Date.now()) / 1000) : 0;
+  }
+
+  function updateLock() {
+    if (!rc.selected) return;
+    const s = unlockedFor();
+    const el = $('rc-lock');
+    el.className = s ? 'okmsg small' : 'muted small';
+    el.textContent = s ? `Unlocked, ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} left` : 'Locked';
+  }
+  setInterval(() => { if (activeTab() === 'nodecfg') updateLock(); }, 1000);
+
+  function updateButtons() {
+    const off = rc.busy || !sendAs();
+    ['rc-read', 'rc-unlock', 'rc-write'].forEach(id => { $(id).disabled = off; });
+    $('rc-write').disabled = off || !node()?.updated_at;
+  }
+
+  // Runs one command, showing a live "waiting" counter. Returns the parsed
+  // reply, or null after showing an error (HTTP error or a CS ERR reply).
+  async function command(kind, body) {
+    const call = rc.selected;
+    rc.busy = true;
+    updateButtons();
+    const t0 = Date.now();
+    const verb = { read: 'Reading', unlock: 'Unlocking', write: 'Writing to' }[kind];
+    const tick = () => rcMsg(`${verb} ${call}… ${Math.round((Date.now() - t0) / 1000)} s (up to 45 s over RF)`, 'muted');
+    tick();
+    const timer = setInterval(tick, 1000);
+    try {
+      const r = await api('POST', `api/admin/remote/${encodeURIComponent(call)}/${kind}`, { login: sendAs(), ...body });
+      if (r.type === 'ERR') { rcMsg(`${call}: ${r.message}`, 'error'); return null; }
+      return r;
+    } catch (e) {
+      rcMsg(e.message, 'error');
+      return null;
+    } finally {
+      clearInterval(timer);
+      rc.busy = false;
+      await loadRemote().catch(() => {});
+    }
+  }
+
+  $('rc-read').addEventListener('click', async () => {
+    const r = await command('read', {});
+    if (r) { renderNode(true); rcMsg(`Read ${Object.keys(r.fields).length} settings from ${rc.selected}.`, 'okmsg'); }
+  });
+
+  async function unlock() {
+    const token = $('rc-token').value;
+    if (!token) { rcMsg('Enter the node’s unlock token.', 'error'); $('rc-token').focus(); return false; }
+    const r = await command('unlock', { token });
+    $('rc-token').value = '';  // also after a failure, so a wrong token isn't silently resent
+    if (!r) return false;
+    rcMsg(`${rc.selected} is unlocked for ${Math.round(r.seconds / 60)} min.`, 'okmsg');
+    return true;
+  }
+  $('rc-unlock').addEventListener('click', unlock);
+
+  $('rc-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const ch = changes();
+    if (!Object.keys(ch).length) { rcMsg('Nothing changed.', 'muted'); return; }
+    if (!unlockedFor() && !(await unlock())) return;
+    const r = await command('write', { fields: ch });
+    if (!r) return;
+    renderNode(true);
+    const done = Object.entries(r.fields).map(([k, v]) => `${k}=${v}`).join(', ');
+    rcMsg(`${rc.selected} saved ${done}.${r.reboot ? ` It reboots in about ${r.reboot} s.` : ''}`, 'okmsg');
+  });
+  $('rc-reset').addEventListener('click', () => { renderNode(true); rcMsg(''); });
+
+  function renderLog(rows) {
+    const cls = r => r.startsWith('ERR') || r.startsWith('error') ? 'error' : r === 'unsolicited' ? 'muted' : 'okmsg';
+    $('rc-log').innerHTML = rows.map(r => `<tr><td>${fmt(r.ts)}</td><td>${esc(r.callsign)}${r.login ? `<br><span class="muted small">from ${esc(r.login)}</span>` : ''}</td>
+        <td><code>${esc(r.command)}</code></td><td class="${cls(r.result)}">${esc(r.result)}</td>
+        <td><pre class="raw">${esc(r.detail)}</pre></td></tr>`).join('')
+      || '<tr><td colspan="5" class="muted">Nothing sent yet.</td></tr>';
   }
 
   kindChanged();

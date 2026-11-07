@@ -171,3 +171,23 @@ table.stats tbody tr.clickable:hover { background: color-mix(in srgb, var(--acce
 .kv dd { margin: 0; word-break: break-all; }
 code, pre { font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
 pre.raw { white-space: pre-wrap; word-break: break-all; margin: 0; }
+
+/* admin tabs and node config */
+.admin .admin-tabs { padding: 0; margin-top: 12px; }
+.admin .admin-tabs .tab { flex: 0 0 auto; padding: 8px 16px; }
+.rc-sendas input[readonly] { color: var(--muted); font-variant-numeric: tabular-nums; }
+.rc-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.rc-head h2 { margin: 0; }
+.admin table.rc-fields td { vertical-align: middle; }
+.rc-fields input, .rc-fields select {
+  width: 100%; max-width: 260px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--input); color: var(--text); font: inherit;
+}
+.rc-fields tr.changed input, .rc-fields tr.changed select { border-color: var(--accent); }
+.rc-fields .reboot { color: var(--warn); font-size: 12px; }
+.rc-unlock { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.rc-unlock .field { margin: 0; }
+.rc-unlock span { padding-bottom: 7px; }
+.admin tr.selected td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.btn:disabled { opacity: .55; cursor: default; }
+.warnmsg { color: var(--warn); }

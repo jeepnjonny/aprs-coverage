@@ -15,7 +15,8 @@ where the local igates and digipeaters can actually hear a mobile.
 
 ## Features
 
-- **Read-only APRS-IS feed.** Logs in with passcode `-1`, so nothing is ever sent.
+- **Read-only APRS-IS feed.** Logs in with passcode `-1`, so the coverage feed never sends anything.
+  Only the admin Node config tab sends, on its own connection (below).
   It filters for the registered stations only and ignores all other traffic.
 - **RF only.** Packets that entered APRS-IS over the internet (`qAC`, APRSdroid over
   TCP, and so on) are dropped, because they say nothing about RF coverage.
@@ -39,6 +40,14 @@ where the local igates and digipeaters can actually hear a mobile.
 - **Admin page** (`/aprs-coverage/admin`, one password-protected account). Register mobiles, igates
   and digipeaters, and see the APRS-IS connection status and recent rejects.
   Station changes take effect immediately, without a restart.
+- **Node config tab** (admin). Reads and changes settings on registered
+  [LoRa FieldOps](https://github.com/KJ7NYE/LoRa_FieldOps_APRS_Tracker) igates and digis over APRS
+  messages (role, tactical callsign, symbol, beacon path, digi mode, beacon rate, GPS source,
+  fixed position), using the firmware's CSR/CSU/CSW remote-config protocol, the same one
+  CourseSentry uses. Commands are sent from the operator's own callsign, typed on the tab and
+  remembered only in that browser; the app calculates its APRS-IS passcode and opens a
+  separate, short-lived connection to send. Needs remote config turned on at the node
+  (`remotecfg on`) and the node's unlock token for writes. Tokens are never stored or logged.
 
 See [docs/PLAN.md](docs/PLAN.md) for the design, attribution rules and known limitations.
 
@@ -57,6 +66,7 @@ for them, so the square size can be changed at any time without reprocessing dat
 | `app/ingest.py` | APRS-IS client and live-update broadcast |
 | `app/packets.py` | Packet parsing, route attribution and quality checks (no I/O) |
 | `app/grid.py` | Square grid math |
+| `app/remotecfg.py` | Remote node config: CSR/CSU/CSW messages, retries, replies |
 | `app/main.py` | Public API, live feed (SSE) and admin API |
 | `app/manage.py` | Command-line password reset |
 | `static/` | Map and admin pages (plain JS + Leaflet, no build step) |

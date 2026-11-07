@@ -13,7 +13,8 @@ def client(tmp_path, monkeypatch):
     from app import config
     importlib.reload(config)
     from app import auth, db, ingest, main
-    for m in (db, auth, ingest, main):
+    from app import remotecfg
+    for m in (db, auth, ingest, remotecfg, main):
         importlib.reload(m)
     with TestClient(main.app) as c:
         db.set_setting("admin_password", auth.hash_password("correct horse battery"))

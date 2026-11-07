@@ -54,6 +54,23 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
+-- Remote config (admin "Node config" tab): last values each igate/digi reported
+CREATE TABLE IF NOT EXISTS node_config (
+    callsign   TEXT PRIMARY KEY,
+    fields     TEXT NOT NULL,                  -- JSON {code: value}
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS node_config_log (
+    id       INTEGER PRIMARY KEY,
+    ts       INTEGER NOT NULL,
+    login    TEXT NOT NULL,                    -- operator callsign the command was sent from
+    callsign TEXT NOT NULL,                    -- node
+    command  TEXT NOT NULL,                    -- unlock tokens are masked
+    result   TEXT NOT NULL,
+    detail   TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
     expires    INTEGER NOT NULL
