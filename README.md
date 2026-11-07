@@ -48,6 +48,10 @@ where the local igates and digipeaters can actually hear a mobile.
   remembered only in that browser; the app calculates its APRS-IS passcode and opens a
   separate, short-lived connection to send. Needs remote config turned on at the node
   (`remotecfg on`) and the node's unlock token for writes. Tokens are never stored or logged.
+- **Logs tab** (admin). Live viewer for the APRS-IS traffic (both connections, every line in
+  and out, with what the ingester did with each packet), the app's own log, and the accepted
+  packet, rejected packet and node-config logs. Live search with highlighting (plain text or
+  regex), type filter, pause, auto-scroll, wrap, UTC/local time, clear and download.
 
 See [docs/PLAN.md](docs/PLAN.md) for the design, attribution rules and known limitations.
 
@@ -67,6 +71,7 @@ for them, so the square size can be changed at any time without reprocessing dat
 | `app/packets.py` | Packet parsing, route attribution and quality checks (no I/O) |
 | `app/grid.py` | Square grid math |
 | `app/remotecfg.py` | Remote node config: CSR/CSU/CSW messages, retries, replies |
+| `app/logbuf.py` | In-memory APRS-IS traffic and app logs for the admin Logs tab |
 | `app/main.py` | Public API, live feed (SSE) and admin API |
 | `app/manage.py` | Command-line password reset |
 | `static/` | Map and admin pages (plain JS + Leaflet, no build step) |

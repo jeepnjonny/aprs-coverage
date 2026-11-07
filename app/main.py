@@ -13,12 +13,13 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
-from . import auth, config, db, grid, remotecfg
+from . import auth, config, db, grid, logbuf, remotecfg
 from .ingest import ingester
 
 remote = remotecfg.RemoteConfig()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logbuf.install_app_handler()
 STATIC = config.BASE_DIR / "static"
 
 
@@ -573,3 +574,49 @@ async def admin_remote_unlock(callsign: str, body: RemoteUnlockIn):
 @app.post("/api/admin/remote/{callsign}/write", dependencies=[Depends(auth.require_admin)])
 async def admin_remote_write(callsign: str, body: RemoteWriteIn):
     return await _remote_call(remote.write(_login(body.login), _config_node(callsign), body.fields))
+
+
+# ── logs (admin "Logs" tab) ──────────────────────────────────────────────────
+# Every log is served as entries {id, ts, level, tag, text, note}. The page asks
+# for the newest `limit` entries, then polls with after=<last id> for new ones.
+LOG_SOURCES = {
+    "aprs": ("APRS-IS traffic", "Every line to and from APRS-IS on the coverage feed and the node-config "
+             "connection. Received packets are tagged with what the ingester did with them. In memory: the "
+             "newest 5000 lines since the last restart. Passcodes and unlock tokens are masked."),
+    "app": ("Application", "This app's own log messages. In memory: the newest 2000 since the last restart."),
+    "packets": ("Accepted packets", "Packets from registered mobiles that were stored as coverage. "
+                "Type is the station that heard the mobile first."),
+    "rejects": ("Rejected packets", "Packets from registered mobiles that failed a data-quality check."),
+    "nodecfg": ("Node config", "Remote-config commands sent to igates/digis, with the replies."),
+}
+_RING_LOGS = {"aprs": logbuf.APRS, "app": logbuf.APP}
+_DB_LOGS = {
+    # table, row -> entry
+    "packets": ("packets", lambda r: {
+        "level": r["heard_by"] or "untraced", "tag": r["mobile"], "text": r["raw"],
+        "note": f"igate {r['igate']}, {r['hops']} hop{'s' if r['hops'] != 1 else ''}"}),
+    "rejects": ("rejects", lambda r: {"level": r["reason"], "tag": r["source"] or "", "text": r["raw"], "note": ""}),
+    "nodecfg": ("node_config_log", lambda r: {
+        "level": r["result"], "tag": f"{r['login']} > {r['callsign']}" if r["login"] else r["callsign"],
+        "text": f"{r['command']}  =>  {r['detail']}", "note": ""}),
+}
+
+
+@app.get("/api/admin/logs", dependencies=[Depends(auth.require_admin)])
+def admin_logs():
+    return [{"id": k, "name": n, "description": d} for k, (n, d) in LOG_SOURCES.items()]
+
+
+@app.get("/api/admin/logs/{source}", dependencies=[Depends(auth.require_admin)])
+def admin_log(source: str, after: int | None = Query(None, ge=0), limit: int = Query(1000, ge=1, le=5000)):
+    if source in _RING_LOGS:
+        return {"epoch": logbuf.EPOCH, "entries": _RING_LOGS[source].since(after, limit)}
+    if source not in _DB_LOGS:
+        raise HTTPException(404, "No such log")
+    table, conv = _DB_LOGS[source]
+    with db.session() as c:
+        if after is None:
+            rows = c.execute(f"SELECT * FROM {table} ORDER BY id DESC LIMIT ?", (limit,)).fetchall()[::-1]
+        else:
+            rows = c.execute(f"SELECT * FROM {table} WHERE id > ? ORDER BY id LIMIT ?", (after, limit)).fetchall()
+    return {"epoch": 0, "entries": [{"id": r["id"], "ts": r["ts"], **conv(r)} for r in rows]}

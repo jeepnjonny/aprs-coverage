@@ -5,6 +5,7 @@ import time
 from collections import Counter
 
 from . import config, db
+from .logbuf import APRS as aprs_log
 from .packets import LastFix, Registry, evaluate
 
 log = logging.getLogger("ingest")
@@ -58,6 +59,7 @@ class Ingester:
         if self._writer and self.connected and new_filter and new_filter != self.active_filter:
             try:
                 self._writer.write(f"#filter {new_filter}\r\n".encode())
+                aprs_log.add("tx", "feed", f"#filter {new_filter}")
                 self.active_filter = new_filter
                 log.info("filter updated: %s", new_filter)
             except Exception as e:  # reconnect loop will recover
@@ -158,6 +160,7 @@ class Ingester:
             except Exception as e:
                 self.error = f"{type(e).__name__}: {e}"
                 log.warning("APRS-IS connection error: %s", self.error)
+                aprs_log.add("sys", "feed", f"connection error: {self.error}; retrying in {backoff} s")
             self.connected = False
             self._writer = None
             await asyncio.sleep(backoff)
@@ -172,12 +175,15 @@ class Ingester:
 
     async def _session(self, filt: str) -> None:
         log.info("connecting to %s:%s", config.APRS_SERVER, config.APRS_PORT)
+        aprs_log.add("sys", "feed", f"connecting to {config.APRS_SERVER}:{config.APRS_PORT}")
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(config.APRS_SERVER, config.APRS_PORT), 20
         )
         self._writer = writer
         try:
-            writer.write(f"user {config.APRS_LOGIN} pass -1 vers {VERSION} filter {filt}\r\n".encode())
+            login_line = f"user {config.APRS_LOGIN} pass -1 vers {VERSION} filter {filt}"
+            writer.write(f"{login_line}\r\n".encode())
+            aprs_log.add("tx", "feed", login_line)
             await writer.drain()
             self.active_filter = filt
             self.connected = True
@@ -190,16 +196,20 @@ class Ingester:
                     raise ConnectionError("server closed connection")
                 line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                 if line.startswith("#"):
+                    aprs_log.add("srv", "feed", line)
                     if "logresp" in line or "aprsc" in line or "javAPRSSrvr" in line:
                         self.server_line = line[2:]
                     continue
                 try:
-                    self.handle_line(line)
+                    kind = self.handle_line(line)
                 except Exception:
+                    kind = "error"
                     log.exception("failed to handle line: %r", line)
+                aprs_log.add("rx", "feed", line, kind)
         finally:
             self.connected = False
             writer.close()
+            aprs_log.add("sys", "feed", "disconnected")
 
 
 ingester = Ingester()

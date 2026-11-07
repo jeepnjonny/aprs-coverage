@@ -95,6 +95,11 @@ def test_aprs_sender(monkeypatch):
         assert logins[0].startswith(f"user {OP} pass {passcode(OP)} ") and f"filter g/{OP}" in logins[0]
         assert logins[1].strip().endswith(":CSR{1")
         assert got == [(NODE, "CS RO=2{7")]
+        # the traffic is in the APRS-IS log, with the passcode masked
+        from app import logbuf
+        texts = [e["text"] for e in logbuf.APRS.since(None, 50) if e["tag"] == f"cfg {OP}"]
+        assert f"user {OP} pass ***** vers {remotecfg.VERSION} filter g/{OP}" in texts
+        assert any(t.endswith(":CSR{1") for t in texts) and str(passcode(OP)) not in " ".join(texts)
 
         # A login the server doesn't verify is refused up front.
         monkeypatch.setattr(remotecfg, "passcode", lambda c: 1)

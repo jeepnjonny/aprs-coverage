@@ -22,7 +22,7 @@
   }
 
   function showLogin() { $('login-card').hidden = false; $('app').hidden = true; $('logout').hidden = true; $('password').focus(); }
-  function showApp() { $('login-card').hidden = true; $('app').hidden = false; $('logout').hidden = false; loadAll(); showTab(location.hash === '#nodecfg' ? 'nodecfg' : 'stations'); }
+  function showApp() { $('login-card').hidden = true; $('app').hidden = false; $('logout').hidden = false; loadAll(); showTab(['nodecfg', 'logs'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'stations'); }
 
   $('login-form').addEventListener('submit', async e => {
     e.preventDefault();
@@ -65,7 +65,7 @@
         <td>${s.color ? `<span class="swatch" style="background:${esc(s.color)}"></span> ` : ''}<b>${esc(s.callsign)}</b></td>
         <td>${KIND[s.kind]}</td><td>${esc(s.label)}${s.notes ? `<br><span class="muted small">${esc(s.notes)}</span>` : ''}</td>
         <td>${pos}</td><td>${s.kind === 'mobile' ? '—' : fmt(s.last_beacon)}</td><td>${s.active ? 'yes' : 'no'}</td>
-        <td class="actions"><button class="btn secondary" data-edit="${s.id}">Edit</button><button class="btn secondary" data-purge="${s.id}" title="${s.kind === 'mobile'
+        <td class="actions"><button class="btn secondary" data-edit="${s.id}">Edit</button><button class="btn purge" data-purge="${s.id}" title="${s.kind === 'mobile'
           ? 'Delete every stored packet from this mobile. The registration is kept.'
           : 'Delete the stored packets this station heard directly (its coverage). The registration is kept.'}">Purge data</button><button class="btn danger" data-del="${s.id}">Delete</button></td>
       </tr>`;
@@ -86,9 +86,9 @@
         if (!count) { alertMsg(`No stored packets for ${s.callsign}.`); return; }
         btn.dataset.armed = '1';
         btn.textContent = `Purge ${count.toLocaleString()}?`;
-        btn.classList.replace('secondary', 'danger');
+        btn.classList.add('armed');
         setTimeout(() => {
-          btn.dataset.armed = ''; btn.textContent = 'Purge data'; btn.classList.replace('danger', 'secondary');
+          btn.dataset.armed = ''; btn.textContent = 'Purge data'; btn.classList.remove('armed');
         }, 4000);
       } catch (e) { alertMsg(e.message, true); }
       finally { btn.disabled = false; }
@@ -219,6 +219,7 @@
     document.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.dataset.pane !== name; });
     try { history.replaceState(null, '', name === 'stations' ? location.pathname + location.search : `#${name}`); } catch { /* ignore */ }
     if (name === 'nodecfg') loadRemote().catch(e => rcMsg(e.message, 'error'));
+    if (name === 'logs') startLogs().catch(e => { $('lg-err').textContent = e.message; });
   }
   document.querySelectorAll('.admin-tabs .tab').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
   const activeTab = () => document.querySelector('.admin-tabs .tab.active')?.dataset.tab;
@@ -455,6 +456,185 @@
         <td><pre class="raw">${esc(r.detail)}</pre></td></tr>`).join('')
       || '<tr><td colspan="5" class="muted">Nothing sent yet.</td></tr>';
   }
+
+  // ── logs ──────────────────────────────────────────────────────────────────
+  // Keeps the newest N entries of one log in memory, polls for new ones every
+  // 2 s while the tab is open and not paused, and re-renders the filtered view.
+  const LG_PREFS = 'acov.logs.prefs';
+  const LG_CHECKS = ['lg-regex', 'lg-case', 'lg-wrap', 'lg-utc'];
+  const LEVEL_CLASS = { rx: 'lv-rx', tx: 'lv-tx', srv: 'lv-srv', sys: 'lv-sys', WARNING: 'lv-warn', ERROR: 'lv-err', CRITICAL: 'lv-err' };
+  const lg = { sources: [], source: null, entries: [], visible: [], epoch: null, lastId: null,
+    live: true, timer: null, loading: false, re: null, reErr: '' };
+
+  function lgSavePrefs() {
+    try {
+      localStorage.setItem(LG_PREFS, JSON.stringify({
+        source: lg.source, limit: $('lg-limit').value,
+        ...Object.fromEntries(LG_CHECKS.map(id => [id, $(id).checked])),
+      }));
+    } catch { /* storage blocked */ }
+  }
+  function lgLoadPrefs() {
+    try {
+      const p = JSON.parse(localStorage.getItem(LG_PREFS) || '{}');
+      LG_CHECKS.forEach(id => { if (typeof p[id] === 'boolean') $(id).checked = p[id]; });
+      if ([...$('lg-limit').options].some(o => o.value === p.limit)) $('lg-limit').value = p.limit;
+      return p;
+    } catch { return {}; }
+  }
+
+  async function startLogs() {
+    if (!lg.sources.length) {
+      lg.sources = await api('GET', 'api/admin/logs');
+      $('lg-source').innerHTML = lg.sources.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+      const p = lgLoadPrefs();
+      $('lg-source').value = lg.sources.some(s => s.id === p.source) ? p.source : lg.sources[0].id;
+      $('lg-view').classList.toggle('wrap', $('lg-wrap').checked);
+    }
+    if (lg.source !== $('lg-source').value) await switchSource();
+    schedulePoll(lg.live ? 0 : 2000);
+  }
+
+  async function switchSource() {
+    lg.source = $('lg-source').value;
+    lg.entries = []; lg.lastId = null; lg.epoch = null;
+    $('lg-desc').textContent = lg.sources.find(s => s.id === lg.source)?.description || '';
+    $('lg-level').value = '';
+    lgSavePrefs();
+    renderLogView();
+    await fetchLog();
+  }
+
+  async function fetchLog() {
+    if (lg.loading) return;
+    lg.loading = true;
+    const src = lg.source;
+    try {
+      const max = +$('lg-limit').value;
+      const q = lg.lastId == null ? `limit=${max}` : `after=${lg.lastId}&limit=5000`;
+      const r = await api('GET', `api/admin/logs/${encodeURIComponent(src)}?${q}`);
+      $('lg-err').textContent = '';
+      if (src !== lg.source) return;  // switched while loading
+      if (lg.epoch !== null && r.epoch !== lg.epoch) {
+        // The server restarted and its in-memory log ids began again: start over.
+        lg.entries = []; lg.lastId = null; lg.epoch = null;
+        renderLogView();
+        return;
+      }
+      lg.epoch = r.epoch;
+      if (r.entries.length) {
+        lg.entries.push(...r.entries);
+        lg.lastId = r.entries[r.entries.length - 1].id;
+        if (lg.entries.length > max) lg.entries.splice(0, lg.entries.length - max);
+      }
+      if (r.entries.length || lg.visible.length === 0) renderLogView();
+    } catch (e) {
+      $('lg-err').textContent = `Could not load the log: ${e.message}`;
+    } finally {
+      lg.loading = false;
+    }
+  }
+
+  function schedulePoll(ms) { clearTimeout(lg.timer); lg.timer = setTimeout(pollLog, ms); }
+  async function pollLog() {
+    if (activeTab() !== 'logs' || $('app').hidden) return;  // showTab('logs') restarts it
+    if (lg.live && !document.hidden) await fetchLog();
+    schedulePoll(2000);
+  }
+
+  function buildMatcher() {
+    const q = $('lg-q').value;
+    lg.reErr = '';
+    if (!q) return null;
+    const src = $('lg-regex').checked ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try { return new RegExp(src, $('lg-case').checked ? 'g' : 'gi'); }
+    catch (e) { lg.reErr = `Invalid regex: ${e.message}`; return null; }
+  }
+
+  function fmtLogTs(ts) {
+    const d = new Date(ts * 1000);
+    if ($('lg-utc').checked) return d.toISOString().replace('T', ' ').slice(0, 19) + 'Z';
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
+  // Escape s and wrap the filter's matches in <mark>.
+  function hl(s) {
+    s = String(s ?? '');
+    const re = lg.re;
+    if (!re) return esc(s);
+    re.lastIndex = 0;
+    let out = '', i = 0, m;
+    while ((m = re.exec(s))) {
+      if (!m[0].length) { re.lastIndex++; continue; }  // zero-length match: avoid looping
+      out += `${esc(s.slice(i, m.index))}<mark>${esc(m[0])}</mark>`;
+      i = m.index + m[0].length;
+    }
+    return out + esc(s.slice(i));
+  }
+
+  const logLine = e => `${e.level}\t${e.tag}\t${e.text}\t${e.note}`;
+
+  function renderLogView() {
+    lg.re = buildMatcher();
+    $('lg-q').classList.toggle('invalid', !!lg.reErr);
+    $('lg-q').title = lg.reErr;
+
+    // Type filter: the types present in what's loaded, keeping the selection.
+    const sel = $('lg-level'), cur = sel.value;
+    const levels = [...new Set(lg.entries.map(e => e.level))].sort();
+    if (cur && !levels.includes(cur)) levels.push(cur);
+    const opts = '<option value="">All types</option>' + levels.map(l => `<option value="${esc(l)}">${esc(l)}</option>`).join('');
+    if (sel.dataset.opts !== opts) { sel.innerHTML = opts; sel.value = cur; sel.dataset.opts = opts; }
+
+    const re = lg.re;
+    lg.visible = lg.entries.filter(e => (!cur || e.level === cur) && (!re || (re.lastIndex = 0, re.test(logLine(e)))));
+    const view = $('lg-view');
+    view.innerHTML = lg.visible.length
+      ? lg.visible.map(e => `<div class="ll ${LEVEL_CLASS[e.level] || ''}"><span class="lt">${fmtLogTs(e.ts)}</span> <span class="lv">${hl(e.level)}</span> <span class="ltag">${hl(e.tag)}</span> ${hl(e.text)}${e.note ? ` <span class="ln">${hl(e.note)}</span>` : ''}</div>`).join('')
+      : `<div class="ll-empty muted">${lg.entries.length ? 'No lines match the filter.' : lg.lastId == null && lg.loading ? 'Loading…' : 'Nothing logged yet.'}</div>`;
+    const filtered = re || cur;
+    $('lg-count').textContent = `${filtered ? `${lg.visible.length.toLocaleString()} of ` : ''}${lg.entries.length.toLocaleString()} lines${lg.live ? '' : ' · paused'}`;
+    if ($('lg-follow').checked) view.scrollTop = view.scrollHeight;
+  }
+
+  let lgDebounce;
+  $('lg-q').addEventListener('input', () => { clearTimeout(lgDebounce); lgDebounce = setTimeout(renderLogView, 120); });
+  $('lg-q').addEventListener('keydown', e => { if (e.key === 'Escape') { $('lg-q').value = ''; renderLogView(); } });
+  ['lg-regex', 'lg-case', 'lg-utc'].forEach(id => $(id).addEventListener('change', () => { lgSavePrefs(); renderLogView(); }));
+  $('lg-level').addEventListener('change', renderLogView);
+  $('lg-source').addEventListener('change', () => switchSource());
+  $('lg-limit').addEventListener('change', () => switchSource());  // reload to fill the new size
+  $('lg-wrap').addEventListener('change', () => { $('lg-view').classList.toggle('wrap', $('lg-wrap').checked); lgSavePrefs(); });
+  $('lg-follow').addEventListener('change', () => { if ($('lg-follow').checked) $('lg-view').scrollTop = $('lg-view').scrollHeight; });
+  // Scrolling up pauses auto-scroll; scrolling back to the bottom resumes it.
+  $('lg-view').addEventListener('scroll', () => {
+    const v = $('lg-view');
+    const atBottom = v.scrollHeight - v.scrollTop - v.clientHeight < 24;
+    if ($('lg-follow').checked !== atBottom) $('lg-follow').checked = atBottom;
+  });
+  $('lg-live').addEventListener('click', () => {
+    lg.live = !lg.live;
+    $('lg-live').textContent = lg.live ? 'Pause' : 'Resume';
+    renderLogView();
+    if (lg.live) schedulePoll(0);
+  });
+  $('lg-clear').addEventListener('click', () => { lg.entries = []; renderLogView(); });
+  $('lg-download').addEventListener('click', () => {
+    const text = lg.visible.map(e => `${fmtLogTs(e.ts)} ${e.level} ${e.tag} ${e.text}${e.note ? `  [${e.note}]` : ''}`).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text + '\n'], { type: 'text/plain' }));
+    a.download = `${lg.source}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.log`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+  // "/" jumps to the filter box, as in most log viewers.
+  document.addEventListener('keydown', e => {
+    if (e.key === '/' && activeTab() === 'logs' && !/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName)) {
+      e.preventDefault();
+      $('lg-q').focus();
+    }
+  });
 
   kindChanged();
   fetch('api/admin/me').then(r => r.json()).then(d => d.logged_in ? showApp() : showLogin()).catch(showLogin);

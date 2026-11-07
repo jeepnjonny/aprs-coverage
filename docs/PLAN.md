@@ -124,6 +124,19 @@ every square boundary.
 - Recent rejected packets with their reasons.
 - Change the password from the page, or on the server with `python -m app.manage set-password`.
 
+## Logs (`app/logbuf.py`, admin "Logs" tab)
+
+- APRS-IS traffic: every line to and from both APRS-IS connections (feed and node config),
+  with connects and disconnects, and the ingester's outcome for each received packet.
+  The application log: this app's Python log records (INFO and up). Both are in-memory
+  ring buffers (5000 and 2000 lines) that start empty after a restart.
+- Passcodes (other than the feed's `-1`) and CSU unlock tokens are masked before a line is
+  stored in either buffer.
+- Accepted packets, rejected packets and node-config commands are read from their tables.
+- `GET /api/admin/logs/<log>?after=<id>` returns entries newer than an id, so the page polls
+  every 2 s for new lines while the tab is open. An `epoch` field changes on restart so the
+  page knows the in-memory ids started over.
+
 ## Remote node config (`app/remotecfg.py`, admin "Node config" tab)
 
 Reads and changes settings on active registered igates/digis that run the LoRa FieldOps

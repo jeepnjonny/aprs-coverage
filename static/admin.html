@@ -25,6 +25,7 @@
     <nav class="tabs admin-tabs" role="tablist">
       <button class="tab active" role="tab" data-tab="stations">Stations</button>
       <button class="tab" role="tab" data-tab="nodecfg">Node config</button>
+      <button class="tab" role="tab" data-tab="logs">Logs</button>
     </nav>
 
     <div data-pane="stations">
@@ -149,6 +150,36 @@
         <thead><tr><th>Time</th><th>Node</th><th>Sent</th><th>Result</th><th>Reply</th></tr></thead>
         <tbody id="rc-log"></tbody>
       </table></div>
+    </section>
+    </div>
+
+    <div data-pane="logs" hidden>
+    <section class="card">
+      <div class="log-toolbar">
+        <label>Log <select id="lg-source" aria-label="Log"></select></label>
+        <input type="search" id="lg-q" placeholder="Filter lines (press / to focus)" aria-label="Filter lines"
+          autocomplete="off" spellcheck="false">
+        <label><input type="checkbox" id="lg-regex"> Regex</label>
+        <label><input type="checkbox" id="lg-case"> Match case</label>
+        <select id="lg-level" aria-label="Type"><option value="">All types</option></select>
+      </div>
+      <div class="log-toolbar">
+        <button type="button" class="btn secondary" id="lg-live">Pause</button>
+        <label><input type="checkbox" id="lg-follow" checked> Auto-scroll</label>
+        <label><input type="checkbox" id="lg-wrap"> Wrap lines</label>
+        <label><input type="checkbox" id="lg-utc"> UTC</label>
+        <label>Keep
+          <select id="lg-limit" aria-label="Lines to keep">
+            <option value="500">500</option><option value="1000" selected>1,000</option>
+            <option value="2000">2,000</option><option value="5000">5,000</option>
+          </select> lines</label>
+        <button type="button" class="btn secondary" id="lg-clear" title="Clear the view. New lines keep coming in.">Clear</button>
+        <button type="button" class="btn secondary" id="lg-download" title="Download the lines that match the filter">Download</button>
+        <span id="lg-count" class="muted small"></span>
+      </div>
+      <p class="muted small" id="lg-desc"></p>
+      <div id="lg-view" class="log-view" role="log" aria-live="off" tabindex="0"></div>
+      <p class="small error" id="lg-err"></p>
     </section>
     </div>
   </div>

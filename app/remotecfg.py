@@ -31,6 +31,8 @@ import re
 import time
 
 from . import config, db
+from .logbuf import APRS as aprs_log
+from .logbuf import mask as logbuf_mask
 
 log = logging.getLogger("remotecfg")
 
@@ -216,14 +218,19 @@ class AprsSender:
         if self.connected and self.login == login:
             return
         await self.close()
+        tag = f"cfg {login}"
+        aprs_log.add("sys", tag, f"connecting to {config.APRS_SERVER}:{config.APRS_PORT}")
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(config.APRS_SERVER, config.APRS_PORT), LOGIN_TIMEOUT_S)
         except (OSError, asyncio.TimeoutError) as e:
+            aprs_log.add("sys", tag, f"connect failed: {e or 'timed out'}")
             raise CommandError(f"Could not connect to APRS-IS {config.APRS_SERVER}: {e or 'timed out'}",
                                "NO_TRANSPORT", 503)
         try:
-            writer.write(f"user {login} pass {passcode(login)} vers {VERSION} filter g/{login}\r\n".encode())
+            login_line = f"user {login} pass {passcode(login)} vers {VERSION} filter g/{login}"
+            writer.write(f"{login_line}\r\n".encode())
+            aprs_log.add("tx", tag, login_line)
             await writer.drain()
             deadline = time.monotonic() + LOGIN_TIMEOUT_S
             while True:
@@ -231,17 +238,20 @@ class AprsSender:
                 if not raw:
                     raise ConnectionError("server closed the connection")
                 line = raw.decode("utf-8", errors="replace").strip()
+                aprs_log.add("srv" if line.startswith("#") else "rx", tag, line)
                 if "logresp" in line:
                     self.server_line = line.lstrip("# ")
                     if " verified" not in line or "unverified" in line:
                         raise CommandError(f"APRS-IS did not verify {login}: {self.server_line}",
                                            "NO_TRANSPORT", 503)
                     break
-        except CommandError:
+        except CommandError as e:
             writer.close()
+            aprs_log.add("sys", tag, f"login refused: {e}")
             raise
         except (OSError, ConnectionError, asyncio.TimeoutError) as e:
             writer.close()
+            aprs_log.add("sys", tag, f"login failed: {e or 'timed out'}")
             raise CommandError(f"APRS-IS login failed: {e or 'timed out'}", "NO_TRANSPORT", 503)
         self.login, self._reader, self._writer = login, reader, writer
         self._task = asyncio.create_task(self._listen(reader, writer))
@@ -249,6 +259,7 @@ class AprsSender:
 
     async def _listen(self, reader, writer) -> None:
         login = self.login
+        tag = f"cfg {login}"
         try:
             while True:
                 # aprsc sends a keepalive about every 20 s
@@ -257,7 +268,9 @@ class AprsSender:
                     break
                 line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                 m = _MESSAGE_RE.match(line)
-                if m and m.group(2).strip().upper() == login:
+                to_us = bool(m and m.group(2).strip().upper() == login)
+                aprs_log.add("srv" if line.startswith("#") else "rx", tag, line, "message to us" if to_us else "")
+                if to_us:
                     try:
                         self.on_message(m.group(1).upper(), m.group(3))
                     except Exception:
@@ -269,6 +282,7 @@ class AprsSender:
             log.info("sending connection as %s ended: %s", login, e)
         finally:
             writer.close()
+            aprs_log.add("sys", tag, "disconnected")
             if self._writer is writer:
                 self._writer = None
 
@@ -277,7 +291,8 @@ class AprsSender:
             raise CommandError("The APRS-IS sending connection dropped", "NO_TRANSPORT", 503)
         self.last_used = time.monotonic()
         self._writer.write((packet + "\r\n").encode())
-        log.info("sent: %s", packet)
+        aprs_log.add("tx", f"cfg {self.login}", packet)
+        log.info("sent: %s", logbuf_mask(packet))
 
     async def close(self) -> None:
         if self._task:
