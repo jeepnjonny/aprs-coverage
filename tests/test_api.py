@@ -87,6 +87,36 @@ def test_station_crud_and_coverage(client):
     assert "K7SWI-1" not in client.ingester.registry.aprs_filter()
 
 
+def test_purge_station_packets(client):
+    login(client)
+    for body in ({"callsign": "K7ABC*", "kind": "mobile"},
+                 {"callsign": "K7XYZ-9", "kind": "mobile"},
+                 {"callsign": "K7SWI-1", "kind": "digi"},
+                 {"callsign": "KG7KMV-10", "kind": "igate"}):
+        assert client.post("/api/admin/stations", json=body, headers=H).status_code == 200
+    ids = {s["callsign"]: s["id"] for s in client.get("/api/admin/stations").json()}
+    ing, t = client.ingester, 2_000_000_000
+    assert ing.handle_line("K7ABC-9>APRS,K7SWI-1*,qAR,KG7KMV-10:=4336.66N/11612.40W>", now=t) == "accept"
+    assert ing.handle_line("K7ABC-7>APRS,qAR,KG7KMV-10:=4337.66N/11612.40W>", now=t + 1) == "accept"
+    assert ing.handle_line("K7XYZ-9>APRS,K7SWI-1*,qAR,KG7KMV-10:=4338.66N/11612.40W>", now=t + 2) == "accept"
+    assert ing.handle_line("K7XYZ-9>APRS,qAR,KG7KMV-10:=4339.66N/11612.40W>", now=t + 60) == "accept"
+
+    url = lambda call: f"/api/admin/stations/{ids[call]}/packets"
+    assert client.get(url("K7ABC*")).json() == {"count": 2}
+    assert client.get(url("K7SWI-1")).json() == {"count": 2}
+    assert client.delete(url("K7ABC*")).status_code == 403  # CSRF header required
+
+    # Wildcard mobile: both SSIDs go, other mobiles stay, last fixes forgotten.
+    assert client.delete(url("K7ABC*"), headers=H).json() == {"deleted": 2}
+    assert not any(m.startswith("K7ABC") for m in ing.last)
+    # Digi: only what it heard directly; the igate keeps its own direct packet.
+    assert client.delete(url("K7SWI-1"), headers=H).json() == {"deleted": 1}
+    assert client.get(url("KG7KMV-10")).json() == {"count": 1}
+    # Registrations are untouched.
+    assert len(client.get("/api/admin/stations").json()) == 4
+    assert client.get("/api/admin/stations/9999/packets").status_code == 404
+
+
 def test_public_endpoints(client):
     assert client.get("/").status_code == 200
     assert client.get("/admin").status_code == 200

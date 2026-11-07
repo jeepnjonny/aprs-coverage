@@ -1,5 +1,6 @@
 """FastAPI app: public map API, live feed, admin API, static pages."""
 import asyncio
+import fnmatch
 import json
 import logging
 import math
@@ -440,6 +441,42 @@ def admin_delete_station(sid: int):
             raise HTTPException(404, "No such station")
     ingester.reload()
     return {"ok": True}
+
+
+def _station_packets(c, sid: int) -> tuple[dict, str, list]:
+    """WHERE clause for the packets a station owns: a mobile's own packets
+    (wildcard patterns via GLOB, which matches fnmatch for '*'), or the packets
+    an igate/digi heard directly. Packets it merely relayed after another
+    station heard them are that station's coverage and are left alone."""
+    st = c.execute("SELECT * FROM stations WHERE id=?", (sid,)).fetchone()
+    if st is None:
+        raise HTTPException(404, "No such station")
+    call = st["callsign"].upper()
+    if st["kind"] == "mobile":
+        return dict(st), "mobile GLOB ?", [call]
+    return dict(st), "heard_by = ?", [call]
+
+
+@app.get("/api/admin/stations/{sid}/packets", dependencies=[Depends(auth.require_admin)])
+def admin_count_station_packets(sid: int):
+    with db.session() as c:
+        _, where, args = _station_packets(c, sid)
+        return {"count": c.execute(f"SELECT COUNT(*) FROM packets WHERE {where}", args).fetchone()[0]}
+
+
+@app.delete("/api/admin/stations/{sid}/packets", dependencies=[Depends(auth.require_admin)])
+def admin_purge_station_packets(sid: int):
+    with db.session() as c:
+        st, where, args = _station_packets(c, sid)
+        deleted = c.execute(f"DELETE FROM packets WHERE {where}", args).rowcount
+    if st["kind"] == "mobile":
+        # Forget the last fix too, so a changed station isn't rejected as a
+        # speed jump from its old position.
+        pattern = st["callsign"].upper()
+        for m in [m for m in ingester.last if fnmatch.fnmatchcase(m, pattern)]:
+            ingester.last.pop(m, None)
+    logging.getLogger("admin").info("purged %d packets for %s", deleted, st["callsign"])
+    return {"deleted": deleted}
 
 
 @app.get("/api/admin/status", dependencies=[Depends(auth.require_admin)])

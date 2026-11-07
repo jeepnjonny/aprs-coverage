@@ -65,11 +65,40 @@
         <td>${s.color ? `<span class="swatch" style="background:${esc(s.color)}"></span> ` : ''}<b>${esc(s.callsign)}</b></td>
         <td>${KIND[s.kind]}</td><td>${esc(s.label)}${s.notes ? `<br><span class="muted small">${esc(s.notes)}</span>` : ''}</td>
         <td>${pos}</td><td>${s.kind === 'mobile' ? '—' : fmt(s.last_beacon)}</td><td>${s.active ? 'yes' : 'no'}</td>
-        <td class="actions"><button class="btn secondary" data-edit="${s.id}">Edit</button><button class="btn danger" data-del="${s.id}">Delete</button></td>
+        <td class="actions"><button class="btn secondary" data-edit="${s.id}">Edit</button><button class="btn secondary" data-purge="${s.id}" title="${s.kind === 'mobile'
+          ? 'Delete every stored packet from this mobile. The registration is kept.'
+          : 'Delete the stored packets this station heard directly (its coverage). The registration is kept.'}">Purge data</button><button class="btn danger" data-del="${s.id}">Delete</button></td>
       </tr>`;
     }).join('') || '<tr><td colspan="7" class="muted">No stations yet. Add your mobiles, igates and digis above.</td></tr>';
     document.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => editStation(+b.dataset.edit)));
     document.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => deleteStation(+b.dataset.del, b)));
+    document.querySelectorAll('[data-purge]').forEach(b => b.addEventListener('click', () => purgeStation(+b.dataset.purge, b)));
+  }
+
+  async function purgeStation(id, btn) {
+    const s = stations.find(x => x.id === id);
+    if (!s || btn.disabled) return;
+    if (btn.dataset.armed !== '1') {
+      // First click: show how much would go, then wait for a second click.
+      btn.disabled = true;
+      try {
+        const { count } = await api('GET', `api/admin/stations/${id}/packets`);
+        if (!count) { alertMsg(`No stored packets for ${s.callsign}.`); return; }
+        btn.dataset.armed = '1';
+        btn.textContent = `Purge ${count.toLocaleString()}?`;
+        btn.classList.replace('secondary', 'danger');
+        setTimeout(() => {
+          btn.dataset.armed = ''; btn.textContent = 'Purge data'; btn.classList.replace('danger', 'secondary');
+        }, 4000);
+      } catch (e) { alertMsg(e.message, true); }
+      finally { btn.disabled = false; }
+      return;
+    }
+    try {
+      const { deleted } = await api('DELETE', `api/admin/stations/${id}/packets`);
+      alertMsg(`Purged ${deleted.toLocaleString()} packets for ${s.callsign}.`);
+      loadAll();
+    } catch (e) { alertMsg(e.message, true); }
   }
 
   function kindChanged() {
