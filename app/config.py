@@ -42,7 +42,7 @@ def _bbox(name: str):
 
 # APRS-IS (read-only: passcode is always -1)
 APRS_LOGIN = os.environ.get("APRS_LOGIN", "").strip().upper()  # e.g. K7SWI-CV
-APRS_SERVER = os.environ.get("APRS_SERVER", "rotate.aprs2.net")
+APRS_SERVER = os.environ.get("APRS_SERVER", "noam.aprs2.net")  # North America pool; rotate.aprs2.net is worldwide
 APRS_PORT = int(os.environ.get("APRS_PORT", "14580"))
 APRS_ENABLED = _bool("APRS_ENABLED", True)
 

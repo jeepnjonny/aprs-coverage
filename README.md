@@ -185,7 +185,7 @@ full list. Restart the service after changing them.
 | Setting | Default | Meaning |
 |---|---|---|
 | `APRS_LOGIN` | (none) | APRS-IS login name, e.g. `K7SWI-CV`. Required. |
-| `APRS_SERVER` / `APRS_PORT` | `rotate.aprs2.net` / `14580` | APRS-IS server |
+| `APRS_SERVER` / `APRS_PORT` | `noam.aprs2.net` / `14580` | APRS-IS server (North America pool; `rotate.aprs2.net` is worldwide) |
 | `APRS_ENABLED` | `1` | `0` turns the feed off (map still works) |
 | `DB_PATH` | `/srv/aprs-coverage/data/coverage.sqlite` | Database file |
 | `GRID_REF_LAT` | `43.6` | Latitude that sets square width. Pick once; changing it moves every square. |

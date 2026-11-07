@@ -28,7 +28,7 @@ only holds recent data.
 ## Architecture
 
 ```
- APRS-IS (rotate.aprs2.net:14580, passcode -1 = read-only)
+ APRS-IS (noam.aprs2.net:14580, passcode -1 = read-only)
         |  filter b/<registered mobiles and igates/digis>
         v
  [ingester]  asyncio task inside the web process
