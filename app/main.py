@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import re
+import signal
 import time
 from contextlib import asynccontextmanager
 
@@ -23,9 +24,31 @@ logbuf.install_app_handler()
 STATIC = config.BASE_DIR / "static"
 
 
+def _end_streams_on_stop() -> None:
+    """On SIGTERM/SIGINT uvicorn waits for open connections to finish before
+    running lifespan shutdown, and /api/live streams never finish on their own,
+    so a stop hung until systemd killed the process. Chain onto uvicorn's
+    signal handlers so the streams end as soon as the stop signal arrives."""
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        prev = signal.getsignal(sig)
+        if not callable(prev):
+            continue
+
+        def handler(signum, frame, prev=prev):
+            loop.call_soon_threadsafe(ingester.close_subscribers)
+            prev(signum, frame)
+
+        try:
+            signal.signal(sig, handler)
+        except ValueError:  # not the main thread (e.g. the test client)
+            return
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    _end_streams_on_stop()
     task = asyncio.create_task(ingester.run())
     yield
     task.cancel()
@@ -280,11 +303,13 @@ async def api_live(request: Request):
         q = ingester.subscribe()
         try:
             yield "retry: 5000\n\n"
-            while True:
+            while not ingester.closing:
                 if await request.is_disconnected():
                     break
                 try:
                     ev = await asyncio.wait_for(q.get(), 20)
+                    if ev is None:  # server stopping
+                        break
                     yield f"data: {json.dumps(ev)}\n\n"
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"

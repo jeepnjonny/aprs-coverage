@@ -191,6 +191,7 @@ class Ingester:
         self.last: dict[str, LastFix] = {}
         self.recent = RecentTx(config.DUPLICATE_WINDOW_S)
         self.subscribers: set[asyncio.Queue] = set()
+        self.closing = False
         self.main = FeedConn("feed")
         self.dupes = FeedConn("dupes")
         self.active_filter = ""
@@ -268,6 +269,16 @@ class Ingester:
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
         self.subscribers.discard(q)
+
+    def close_subscribers(self) -> None:
+        """Server is stopping: wake every live stream with a None sentinel so
+        it ends. Streams also check `closing` in case a queue was full."""
+        self.closing = True
+        for q in list(self.subscribers):
+            try:
+                q.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
 
     def _broadcast(self, event: dict) -> None:
         for q in list(self.subscribers):
