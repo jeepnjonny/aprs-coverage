@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
-from . import auth, config, db, grid, logbuf, remotecfg
+from . import auth, config, db, grid, ingest, logbuf, remotecfg
 from .ingest import ingester
 from .packets import mobile_matches
 
@@ -179,16 +179,21 @@ def api_coverage(
         where, args = _where(c, start, end, _csv(mobiles), _csv(heard_by), match)
         rows = c.execute(
             f"SELECT {cx} AS x, {cy} AS y, COALESCE(heard_by, '(untraced)') AS h, mobile AS m, "
-            f"COUNT(*) AS n, MIN(ts) AS first, MAX(ts) AS last "
+            f"COUNT(DISTINCT txid) AS n, MIN(ts) AS first, MAX(ts) AS last "
             f"FROM packets WHERE {where} GROUP BY x, y, h, m",
             args,
         ).fetchall()
+        # A transmission heard by several stations has one row per copy; the
+        # square's total counts it once.
+        totals = {(r[0], r[1]): r[2] for r in c.execute(
+            f"SELECT {cx} AS x, {cy} AS y, COUNT(DISTINCT txid) FROM packets WHERE {where} GROUP BY x, y",
+            args)}
+        total = c.execute(f"SELECT COUNT(DISTINCT txid) FROM packets WHERE {where}", args).fetchone()[0]
     # Every square carries both breakdowns so the tooltip can list who heard it
     # and which mobiles were there, whatever the color mode.
     cells: dict[tuple[int, int], list] = {}
     for r in rows:
-        e = cells.setdefault((r["x"], r["y"]), [r["x"], r["y"], 0, 0, {}, {}, {}, r["first"]])
-        e[2] += r["n"]
+        e = cells.setdefault((r["x"], r["y"]), [r["x"], r["y"], totals[(r["x"], r["y"])], 0, {}, {}, {}, r["first"]])
         e[3] = max(e[3], r["last"])
         e[5][r["h"]] = e[5].get(r["h"], 0) + r["n"]
         e[6][r["m"]] = e[6].get(r["m"], 0) + r["n"]
@@ -198,7 +203,7 @@ def api_coverage(
     dlat, dlon = grid.cell_deg(cell)
     return {
         "cell_m": cell, "dlat": dlat, "dlon": dlon, "start": start, "end": end,
-        "packets": sum(e[2] for e in cells.values()),
+        "packets": total,
         # [x, y, count, last_ts, {color key: count}, {heard_by: count}, {mobile: count}, first_ts]
         "cells": list(cells.values()),
     }
@@ -219,12 +224,12 @@ def api_stats(
         where, args = _where(c, start, end, _csv(mobiles), None, "first")
         direct = {
             r["k"]: dict(r) for r in c.execute(
-                f"SELECT COALESCE(heard_by,'(untraced)') AS k, COUNT(*) AS packets, "
+                f"SELECT COALESCE(heard_by,'(untraced)') AS k, COUNT(DISTINCT txid) AS packets, "
                 f"COUNT(DISTINCT {cx} || ',' || {cy}) AS cells, COUNT(DISTINCT mobile) AS mobiles, "
                 f"MAX(ts) AS last FROM packets WHERE {where} GROUP BY k", args)
         }
         gated = dict(c.execute(
-            f"SELECT igate, COUNT(*) FROM packets WHERE {where} GROUP BY igate", args).fetchall())
+            f"SELECT igate, COUNT(DISTINCT txid) FROM packets WHERE {where} GROUP BY igate", args).fetchall())
         infra = c.execute("SELECT * FROM stations WHERE kind != 'mobile'").fetchall()
 
         ky = grid.M_PER_DEG_LAT / 1000
@@ -258,7 +263,7 @@ def api_stats(
         infra_rows.sort(key=lambda r: (-r["heard_direct"], r["callsign"]))
 
         mob_rows = [dict(r) for r in c.execute(
-            f"SELECT mobile, COUNT(*) AS packets, COUNT(DISTINCT {cx} || ',' || {cy}) AS cells, "
+            f"SELECT mobile, COUNT(DISTINCT txid) AS packets, COUNT(DISTINCT {cx} || ',' || {cy}) AS cells, "
             f"MAX(ts) AS last FROM packets WHERE {where} GROUP BY mobile ORDER BY packets DESC", args)]
     return {"infra": infra_rows, "mobiles": mob_rows}
 
@@ -494,7 +499,9 @@ def admin_purge_station_packets(sid: int):
 @app.get("/api/admin/status", dependencies=[Depends(auth.require_admin)])
 def admin_status():
     with db.session() as c:
-        totals = dict(c.execute("SELECT COUNT(*) AS packets, MIN(ts) AS first, MAX(ts) AS last FROM packets").fetchone())
+        totals = dict(c.execute(
+            "SELECT COUNT(*) AS packets, COALESCE(SUM(dupe), 0) AS dupes, MIN(ts) AS first, MAX(ts) AS last "
+            "FROM packets").fetchone())
     return {"ingest": ingester.status(), "db": totals, "db_path": str(config.DB_PATH)}
 
 
@@ -502,6 +509,67 @@ def admin_status():
 def admin_rejects(limit: int = Query(200, ge=1, le=2000)):
     with db.session() as c:
         return [dict(r) for r in c.execute("SELECT * FROM rejects ORDER BY id DESC LIMIT ?", (limit,))]
+
+
+# ── feed settings (admin "Stations" tab) ─────────────────────────────────────
+HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$|^\[?[0-9A-Fa-f:]+\]?$")
+LOGIN_RE = re.compile(r"^[A-Z0-9]{1,6}(-[A-Z0-9]{1,2})?$")
+
+
+class FeedsIn(BaseModel):
+    server: str = ""
+    port: int | None = None
+    dupe_enabled: bool = False
+    dupe_server: str = ""
+    dupe_port: int | None = None
+    dupe_login: str = ""
+
+    @field_validator("server", "dupe_server")
+    @classmethod
+    def _host(cls, v):
+        v = v.strip()
+        if v and not HOST_RE.match(v):
+            raise ValueError("server must be a host name or IP address")
+        return v.strip("[]")
+
+    @field_validator("port", "dupe_port")
+    @classmethod
+    def _port(cls, v):
+        if v is not None and not 1 <= v <= 65535:
+            raise ValueError("port must be 1-65535")
+        return v
+
+    @field_validator("dupe_login")
+    @classmethod
+    def _dlogin(cls, v):
+        v = v.strip().upper()
+        if v and not LOGIN_RE.match(v):
+            raise ValueError("login must be a callsign with an optional SSID, e.g. K7ABC-DF")
+        return v
+
+
+def _feeds_out() -> dict:
+    from dataclasses import asdict
+    return {"settings": asdict(ingester.feeds), "default_server": config.APRS_SERVER,
+            "default_port": config.APRS_PORT, "login": config.APRS_LOGIN}
+
+
+@app.get("/api/admin/feeds", dependencies=[Depends(auth.require_admin)])
+def admin_feeds():
+    return _feeds_out()
+
+
+@app.put("/api/admin/feeds", dependencies=[Depends(auth.require_admin)])
+def admin_set_feeds(body: FeedsIn):
+    if body.dupe_enabled:
+        if not (body.dupe_server and body.dupe_port and body.dupe_login):
+            raise HTTPException(422, "The duplicates feed needs a server, a port and a login")
+    if body.dupe_login and body.dupe_login == config.APRS_LOGIN:
+        raise HTTPException(422, f"Use a different login from the coverage feed ({config.APRS_LOGIN}), "
+                                 "or the server may drop one connection when the other logs in")
+    ingester.set_feeds(ingest.FeedSettings(**body.model_dump()))
+    logging.getLogger("admin").info("feed settings changed: %s", body.model_dump())
+    return _feeds_out()
 
 
 # ── remote node config (admin "Node config" tab) ─────────────────────────────
@@ -589,7 +657,7 @@ async def admin_remote_write(callsign: str, body: RemoteWriteIn):
 # for the newest `limit` entries, then polls with after=<last id> for new ones.
 LOG_SOURCES = {
     "aprs": ("APRS-IS traffic", "Every line to and from APRS-IS on the coverage feed and the node-config "
-             "connection. Received packets are tagged with what the ingester did with them. In memory: the "
+             "connection, plus lines from registered stations on the duplicates feed (tag dupes). Received packets are tagged with what the ingester did with them. In memory: the "
              "newest 5000 lines since the last restart. Passcodes and unlock tokens are masked."),
     "app": ("Application", "This app's own log messages. In memory: the newest 2000 since the last restart."),
     "packets": ("Accepted packets", "Packets from registered mobiles that were stored as coverage. "
@@ -602,7 +670,8 @@ _DB_LOGS = {
     # table, row -> entry
     "packets": ("packets", lambda r: {
         "level": r["heard_by"] or "untraced", "tag": r["mobile"], "text": r["raw"],
-        "note": f"igate {r['igate']}, {r['hops']} hop{'s' if r['hops'] != 1 else ''}"}),
+        "note": f"igate {r['igate']}, {r['hops']} hop{'s' if r['hops'] != 1 else ''}"
+                + (", duplicates feed" if r["dupe"] else "")}),
     "rejects": ("rejects", lambda r: {"level": r["reason"], "tag": r["source"] or "", "text": r["raw"], "note": ""}),
     "nodecfg": ("node_config_log", lambda r: {
         "level": r["result"], "tag": f"{r['login']} > {r['callsign']}" if r["login"] else r["callsign"],

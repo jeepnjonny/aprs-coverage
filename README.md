@@ -27,6 +27,10 @@ where the local igates and digipeaters can actually hear a mobile.
 - **Data-quality filters.** Drops ambiguous and 0,0 positions, duplicates, impossible
   speed jumps, and (optionally) anything outside a set region. Rejects are listed
   on the admin page with the reason.
+- **Every station that heard a packet** (optional). APRS-IS passes on only the first copy
+  of a packet. If your igates connect to your own aprsc, the app can also read its
+  duplicates feed, so a packet heard by three igates credits all three. Set up on the
+  admin page; see [Duplicates feed](#duplicates-feed-your-own-aprsc).
 - **History.** Every accepted packet is stored in SQLite, so coverage can be viewed
   for any time range, not just what APRS-IS still holds.
 - **Map.**
@@ -68,7 +72,7 @@ for them, so the square size can be changed at any time without reprocessing dat
 
 | Path | What it is |
 |---|---|
-| `app/ingest.py` | APRS-IS client and live-update broadcast |
+| `app/ingest.py` | APRS-IS clients (coverage and duplicates feeds) and live-update broadcast |
 | `app/packets.py` | Packet parsing, route attribution and quality checks (no I/O) |
 | `app/grid.py` | Square grid math |
 | `app/remotecfg.py` | Remote node config: CSR/CSU/CSW messages, retries, replies |
@@ -177,15 +181,63 @@ cd /srv/aprs-coverage && sudo -u www-data .venv/bin/python -m app.manage set-pas
 cd /srv/aprs-coverage && sudo -u www-data .venv/bin/python -m app.manage logout-all     # end all admin sessions
 ```
 
+### Duplicates feed (your own aprsc)
+
+APRS-IS forwards only the first copy of each packet. When several igates gate the
+same packet, the server drops the later copies (for about 30 s), so the map normally
+credits only the igate or digi whose copy arrived first. To see every station that
+heard a packet:
+
+1. Run your own [aprsc](https://github.com/hessu/aprsc) server, uplinked to APRS-IS
+   with a full feed, and add a duplicates listener to `aprsc.conf`, for example:
+
+   ```
+   Listen "Client-Defined Filters" igate    tcp ::0 14580
+   Listen "Duplicates"             dupefeed tcp ::0 14501
+   Uplink "Core rotate"            full     tcp noam.aprs2.net 10152
+   ```
+
+   Only the coverage app needs the duplicates port, so firewall it to that host (or
+   listen on `127.0.0.1` if both run on the same machine). See the aprsc
+   documentation for the server ID, passcode and uplink settings.
+2. Point your igates at your aprsc (the APRS-IS server and port fields in the
+   igate settings). aprsc forwards their packets to APRS-IS as usual.
+3. On the admin page, under **Feed servers**:
+   - Set the coverage feed to your aprsc's filtered port (14580), so both feeds
+     come from the same server.
+   - Tick **Connect to an aprsc duplicates feed** and enter the server, the
+     duplicates port and a login. The login is read-only (passcode -1) and must
+     differ from `APRS_LOGIN`, for example `K7SWI-DF`.
+   - Save. Both feeds reconnect at once; no restart needed.
+
+How copies are counted:
+
+- Copies with the same source and the same packet content within
+  `DUPLICATE_WINDOW_S` are one transmission, whichever path each copy took.
+- Each copy is stored as its own row, credited to the station that heard it.
+- Squares, mobile packet totals and per-station counts (heard direct, gated)
+  count each transmission once. A packet heard by SQB and KJ7NYE-10 counts once
+  in the square and once for each of the two stations.
+- A copy with the same route as one already stored (for example, on both feeds)
+  is rejected as a duplicate.
+- The duplicates feed has no filter, so the app checks every line it sends and
+  only logs lines from registered stations (tag `dupes` in the Logs tab).
+
+What it can't show: each igate's firmware also drops duplicates. An igate that
+hears a mobile directly and again through a digi gates only the first copy, so you
+see what each igate gated, not everything it received.
+
 ### Configuration
 
-Settings live in `/srv/aprs-coverage/.env`. See [.env.example](.env.example) for the
+The APRS-IS servers can be changed on the admin page (**Feed servers**); those
+settings are kept in the database and override `APRS_SERVER`/`APRS_PORT`. Everything
+else lives in `/srv/aprs-coverage/.env`. See [.env.example](.env.example) for the
 full list. Restart the service after changing them.
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `APRS_LOGIN` | (none) | APRS-IS login name, e.g. `K7SWI-CV`. Required. |
-| `APRS_SERVER` / `APRS_PORT` | `noam.aprs2.net` / `14580` | APRS-IS server (North America pool; `rotate.aprs2.net` is worldwide) |
+| `APRS_SERVER` / `APRS_PORT` | `noam.aprs2.net` / `14580` | Default APRS-IS server (North America pool; `rotate.aprs2.net` is worldwide). Overridden by the admin page's feed settings. The node-config connection always uses this one. |
 | `APRS_ENABLED` | `1` | `0` turns the feed off (map still works) |
 | `DB_PATH` | `/srv/aprs-coverage/data/coverage.sqlite` | Database file |
 | `GRID_REF_LAT` | `43.6` | Latitude that sets square width. Pick once; changing it moves every square. |

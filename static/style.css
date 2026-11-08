@@ -166,6 +166,8 @@ table.stats tbody tr.clickable:hover { background: color-mix(in srgb, var(--acce
 .admin { max-width: 1000px; margin: 0 auto; padding: 16px; }
 .admin header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .card { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin: 14px 0; background: var(--panel); }
+.card h3 { font-size: 14px; margin: 14px 0 6px; }
+.card h3:first-of-type { margin-top: 4px; }
 .grid-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0 14px; }
 .admin table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .admin th, .admin td { padding: 6px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }

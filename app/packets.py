@@ -135,8 +135,13 @@ class Outcome:
     record: dict | None = None
 
 
-def evaluate(line: str, now: int, registry: Registry, last: dict[str, LastFix]) -> Outcome:
-    """Classify one raw APRS-IS line. On 'accept', the record is ready to insert."""
+def evaluate(line: str, now: int, registry: Registry, last: dict[str, LastFix],
+             dupe: bool = False) -> Outcome:
+    """Classify one raw APRS-IS line. On 'accept', the record is ready to insert.
+
+    dupe=True is for lines from an aprsc duplicates feed: extra copies of a
+    packet another igate gated first. They are the same transmission, so the
+    repeated-beacon check is left to RecentTx, which compares routes instead."""
     if not line or line.startswith("#"):
         return Outcome("ignore")
     try:
@@ -199,7 +204,7 @@ def evaluate(line: str, now: int, registry: Registry, last: dict[str, LastFix]) 
     if prev is not None:
         dt = now - prev.ts
         km = approx_km(prev.lat, prev.lon, lat, lon)
-        if (dt <= config.DUPLICATE_WINDOW_S and km < 0.001
+        if (not dupe and dt <= config.DUPLICATE_WINDOW_S and km < 0.001
                 and prev.heard_by == route.heard_by):
             return reject("duplicate")
         if 0 <= dt < 3600:
@@ -223,3 +228,49 @@ def evaluate(line: str, now: int, registry: Registry, last: dict[str, LastFix]) 
         "raw": line,
     }
     return Outcome("accept", source=src, record=record)
+
+
+# ── copies of one transmission ───────────────────────────────────────────────
+_DUPE_PREFIX_RE = re.compile(r"^dup\s")
+
+
+def strip_dupe_prefix(line: str) -> str:
+    """aprsc marks lines on its duplicates feed with a 'dup' + tab prefix;
+    accept lines with or without it."""
+    return _DUPE_PREFIX_RE.sub("", line, count=1)
+
+
+def tx_key(mobile: str, line: str) -> str:
+    """Identify one transmission: the same source and the same information
+    field (everything after the first ':') is the same packet, whichever igate
+    gated it or which way it travelled. This is how APRS-IS spots duplicates."""
+    return f"{mobile}|{line.partition(':')[2]}"
+
+
+@dataclass
+class Tx:
+    ts: int
+    txid: int
+    routes: set[tuple[str | None, str]] = field(default_factory=set)  # (heard_by, igate)
+
+
+class RecentTx:
+    """Recent transmissions and the routes each has been stored with, so that
+    copies from the main and duplicates feeds share one transmission id and an
+    identical copy (same heard_by and igate) is not stored twice."""
+
+    def __init__(self, window_s: int):
+        self.window_s = window_s
+        self._tx: dict[str, Tx] = {}
+
+    def get(self, key: str, now: int) -> Tx | None:
+        if len(self._tx) > 500:
+            self._tx = {k: t for k, t in self._tx.items() if now - t.ts <= self.window_s}
+        t = self._tx.get(key)
+        return t if t is not None and now - t.ts <= self.window_s else None
+
+    def add(self, key: str, now: int, txid: int, route: tuple[str | None, str]) -> None:
+        t = self.get(key, now)
+        if t is None:
+            t = self._tx[key] = Tx(now, txid)
+        t.routes.add(route)

@@ -35,6 +35,36 @@
     </section>
 
     <section class="card">
+      <h2>Feed servers</h2>
+      <form id="feeds-form">
+        <h3>Coverage feed</h3>
+        <div class="grid-form">
+          <label class="field">Server <input type="text" id="f-server" autocomplete="off" spellcheck="false"></label>
+          <label class="field">Port <input type="number" id="f-port" min="1" max="65535"></label>
+        </div>
+        <p class="muted small">Filtered APRS-IS port for your registered stations. Leave blank for the
+          defaults from <code>.env</code>. If your igates connect to your own aprsc, point this at it too
+          (its normal filtered port, usually 14580), so both feeds see the same packets.</p>
+        <h3>Duplicates feed</h3>
+        <label class="check"><input type="checkbox" id="f-dupe"> Connect to an aprsc duplicates feed</label>
+        <div class="grid-form">
+          <label class="field">Server <input type="text" id="f-dserver" autocomplete="off" spellcheck="false"
+            placeholder="e.g. aprs.example.org"></label>
+          <label class="field">Port <input type="number" id="f-dport" min="1" max="65535" placeholder="e.g. 14501"></label>
+          <label class="field">Login <input type="text" id="f-dlogin" autocomplete="off" autocapitalize="characters"
+            spellcheck="false" maxlength="9" placeholder="e.g. K7ABC-DF"></label>
+        </div>
+        <p class="muted small">APRS-IS passes on only the first copy of a packet. When several igates gate
+          the same packet, aprsc drops the later copies, and its duplicates feed (a <code>dupefeed</code>
+          listener in <code>aprsc.conf</code>) sends those copies out. With your igates connected to your own aprsc, this
+          shows every igate and digi that heard a packet, not only the first one. Copies of one packet count
+          once in packet totals, and once for each station that heard it. Read-only (passcode -1), no filter.
+          Use a login different from the coverage feed's.</p>
+        <button class="btn">Save and reconnect</button> <span id="feeds-msg"></span>
+      </form>
+    </section>
+
+    <section class="card">
       <h2 id="form-title">Register a station</h2>
       <form id="station-form">
         <input type="hidden" id="s-id">

@@ -45,12 +45,56 @@
       ['Filter', `<code>${esc(i.filter) || '—'}</code>`],
       ['Connected since', fmt(i.connected_since)],
       ['Last accepted packet', fmt(i.last_packet_ts)],
+      ['Duplicates feed', dupeState(i.dupe)],
       ['Counters (since restart)', esc(counts)],
-      ['Stored packets', `${s.db.packets.toLocaleString()} (${fmt(s.db.first)} → ${fmt(s.db.last)})`],
+      ['Stored packets', `${s.db.packets.toLocaleString()}${s.db.dupes ? ` (${s.db.dupes.toLocaleString()} from the duplicates feed)` : ''}, ${fmt(s.db.first)} → ${fmt(s.db.last)}`],
       ['Database', `<code>${esc(s.db_path)}</code>`],
     ];
     $('status').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   }
+
+  function dupeState(d) {
+    if (!d.enabled) return '<span class="muted">Off</span>';
+    const state = d.connected ? '<span class="okmsg">Connected</span>' : `<span class="error">Disconnected</span> ${esc(d.error)}`;
+    return `${state}${d.server ? ` — ${esc(d.server)} as ${esc(d.login)}` : ''}`
+      + (d.server_line ? `<br><span class="muted small">${esc(d.server_line)}</span>` : '')
+      + (d.connected ? `<br><span class="muted small">Last line ${fmt(d.last_line_ts)}</span>` : '');
+  }
+
+  // ── feed servers ──────────────────────────────────────────────────────────
+  function showFeeds(f) {
+    const s = f.settings;
+    $('f-server').value = s.server; $('f-server').placeholder = f.default_server;
+    $('f-port').value = s.port ?? ''; $('f-port').placeholder = f.default_port;
+    $('f-dupe').checked = s.dupe_enabled;
+    $('f-dserver').value = s.dupe_server;
+    $('f-dport').value = s.dupe_port ?? '';
+    $('f-dlogin').value = s.dupe_login;
+    if (f.login && !s.dupe_login) $('f-dlogin').placeholder = `not ${f.login}, e.g. ${f.login.split('-')[0]}-DF`;
+    dupeToggled();
+  }
+  function dupeToggled() {
+    const on = $('f-dupe').checked;
+    ['f-dserver', 'f-dport', 'f-dlogin'].forEach(id => { $(id).required = on; });
+  }
+  $('f-dupe').addEventListener('change', dupeToggled);
+  async function loadFeeds() { showFeeds(await api('GET', 'api/admin/feeds')); }
+
+  $('feeds-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const m = $('feeds-msg');
+    const port = id => $(id).value === '' ? null : Number($(id).value);
+    try {
+      showFeeds(await api('PUT', 'api/admin/feeds', {
+        server: $('f-server').value.trim(), port: port('f-port'),
+        dupe_enabled: $('f-dupe').checked, dupe_server: $('f-dserver').value.trim(),
+        dupe_port: port('f-dport'), dupe_login: $('f-dlogin').value.trim(),
+      }));
+      m.className = 'okmsg'; m.textContent = 'Saved.';
+      setTimeout(() => { if (m.textContent === 'Saved.') m.textContent = ''; }, 4000);
+      setTimeout(() => loadStatus().catch(() => {}), 2000);
+    } catch (err) { m.className = 'error'; m.textContent = err.message; }
+  });
 
   // ── stations ──────────────────────────────────────────────────────────────
   let stations = [];
@@ -206,6 +250,7 @@
 
   function loadAll() {
     loadStatus().catch(() => {});
+    loadFeeds().catch(() => {});
     loadStations().catch(() => {});
     loadRejects().catch(() => {});
   }

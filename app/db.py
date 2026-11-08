@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS packets (
     heard_by  TEXT,                            -- first RF hop that heard the mobile; NULL = untraced
     hops      INTEGER NOT NULL,                -- used digipeater hops
     chain     TEXT NOT NULL,                   -- ' DIGI1 DIGI2 IGATE ' (space padded for LIKE)
-    raw       TEXT NOT NULL
+    raw       TEXT NOT NULL,
+    txid      INTEGER,                         -- id of the first stored copy of this transmission
+    dupe      INTEGER NOT NULL DEFAULT 0       -- 1 = came from the aprsc duplicates feed
 );
 CREATE INDEX IF NOT EXISTS ix_packets_ts       ON packets(ts);
 CREATE INDEX IF NOT EXISTS ix_packets_mobile   ON packets(mobile, ts);
@@ -101,6 +103,17 @@ def session():
 def init() -> None:
     with session() as c:
         c.executescript(SCHEMA)
+        _migrate(c)
+
+
+def _migrate(c: sqlite3.Connection) -> None:
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(packets)")}
+    if "txid" not in cols:
+        c.execute("ALTER TABLE packets ADD COLUMN txid INTEGER")
+    if "dupe" not in cols:
+        c.execute("ALTER TABLE packets ADD COLUMN dupe INTEGER NOT NULL DEFAULT 0")
+    # Rows stored before duplicates were tracked are each their own transmission.
+    c.execute("UPDATE packets SET txid = id WHERE txid IS NULL")
 
 
 def get_setting(key: str):

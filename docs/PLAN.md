@@ -200,7 +200,12 @@ Later, maybe:
 
 - **APRS-IS drops duplicates.** When several igates gate the same packet, APRS-IS
   passes only the first one (about a 30 s window). Per-igate coverage undercounts
-  where igates overlap. Overall coverage is not affected.
+  where igates overlap. Overall coverage is not affected. With the igates on your
+  own aprsc and its duplicates feed turned on (admin page, Feed servers), the
+  dropped copies are stored too. They share a transmission id (`packets.txid`), so
+  totals count each transmission once and each station that heard it once. Igate
+  firmware still drops its own duplicates (direct and via a digi), which no feed
+  can recover.
 - **No backfill.** History starts when the ingester first runs.
 - **Untraced hops.** A packet that went through a digi that does not insert its
   callsign cannot be credited to that digi.
