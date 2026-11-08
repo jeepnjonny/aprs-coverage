@@ -231,3 +231,4 @@ pre.raw { white-space: pre-wrap; word-break: break-all; margin: 0; }
 .ll.lv-sys .lv, .ll.lv-warn .lv { color: var(--warn); }
 .ll.lv-err { color: var(--bad); }
 .log-view mark { background: color-mix(in srgb, var(--warn) 40%, transparent); color: inherit; border-radius: 2px; }
+.ok-text { color: var(--ok); }

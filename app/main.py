@@ -432,8 +432,33 @@ class StationIn(BaseModel):
 
 @app.get("/api/admin/stations", dependencies=[Depends(auth.require_admin)])
 def admin_list_stations():
+    """Igates and digis get `own_server`, the name of your aprsc (from the
+    duplicates feed's login reply), to compare with their `is_server`.
+    Igates also get `gated`: packets from registered mobiles they gated in
+    the last GATED_WINDOW_S, split by feed. "main" copies are the ones APRS-IS
+    passed on (this igate was first); "dupe" copies came from the aprsc
+    duplicates feed (another igate got there first)."""
+    since = int(time.time()) - GATED_WINDOW_S
     with db.session() as c:
-        return [dict(r) for r in c.execute("SELECT * FROM stations ORDER BY kind, callsign")]
+        rows = [dict(r) for r in c.execute("SELECT * FROM stations ORDER BY kind, callsign")]
+        gated: dict[str, dict] = {}
+        for r in c.execute(
+            "SELECT igate, dupe, COUNT(*) AS n, MAX(ts) AS last FROM packets WHERE ts >= ? GROUP BY igate, dupe",
+            (since,),
+        ):
+            g = gated.setdefault(r["igate"].upper(), {"main": 0, "main_last": None, "dupe": 0, "dupe_last": None})
+            pre = "dupe" if r["dupe"] else "main"
+            g[pre], g[f"{pre}_last"] = r["n"], r["last"]
+    empty = {"main": 0, "main_last": None, "dupe": 0, "dupe_last": None}
+    for s in rows:
+        if s["kind"] != "mobile":
+            s["own_server"] = ingester.own_server  # to compare with is_server
+        if s["kind"] in ("igate", "digi_igate"):
+            s["gated"] = {**gated.get(s["callsign"].upper(), empty), "window_s": GATED_WINDOW_S}
+    return rows
+
+
+GATED_WINDOW_S = 7 * 86400
 
 
 @app.post("/api/admin/stations", dependencies=[Depends(auth.require_admin)])

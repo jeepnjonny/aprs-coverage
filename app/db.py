@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS stations (
     auto_lat    REAL,                          -- last position beaconed by the station itself
     auto_lon    REAL,
     last_beacon INTEGER,
+    is_server   TEXT,                          -- APRS-IS server named in its last qAC packet (its own login)
+    is_server_ts INTEGER,
     active      INTEGER NOT NULL DEFAULT 1,
     created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
@@ -112,6 +114,10 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE packets ADD COLUMN txid INTEGER")
     if "dupe" not in cols:
         c.execute("ALTER TABLE packets ADD COLUMN dupe INTEGER NOT NULL DEFAULT 0")
+    scols = {r["name"] for r in c.execute("PRAGMA table_info(stations)")}
+    if "is_server" not in scols:
+        c.execute("ALTER TABLE stations ADD COLUMN is_server TEXT")
+        c.execute("ALTER TABLE stations ADD COLUMN is_server_ts INTEGER")
     # Rows stored before duplicates were tracked are each their own transmission.
     c.execute("UPDATE packets SET txid = id WHERE txid IS NULL")
 

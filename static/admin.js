@@ -98,22 +98,42 @@
 
   // ── stations ──────────────────────────────────────────────────────────────
   let stations = [];
+  // Which APRS-IS server the station is logged into, from qAC on its own packets.
+  function serverCell(s) {
+    if (!s.is_server) return '<span class="muted">not seen</span>';
+    const when = `<br><span class="muted small">as of ${fmt(s.is_server_ts)}</span>`;
+    if (!s.own_server) return `<b>${esc(s.is_server)}</b>${when}`;
+    return s.is_server === s.own_server
+      ? `<span class="ok-text">✓ yours</span> <span class="muted small">(${esc(s.is_server)})</span>${when}`
+      : `<span class="warnmsg">✗ ${esc(s.is_server)}</span>${when}`;
+  }
+  // Which feed an igate's gated packets arrived on (see the note under the table).
+  function gatedCell(g) {
+    if (!g) return '<span class="muted">—</span>';
+    if (!g.main && !g.dupe) return '<span class="muted">nothing gated</span>';
+    const tag = g.main && g.dupe ? 'APRS-IS + dupes' : g.main ? 'APRS-IS' : 'Dupes only';
+    const line = (name, n, ts) => n ? `<br><span class="muted small">${name}: ${n}, last ${fmt(ts)}</span>` : '';
+    return `<b>${tag}</b>${line('APRS-IS', g.main, g.main_last)}${line('Dupes', g.dupe, g.dupe_last)}`;
+  }
   async function loadStations() {
     stations = await api('GET', 'api/admin/stations');
-    $('stations').innerHTML = stations.map(s => {
+    const callCell = s => `<td>${s.color ? `<span class="swatch" style="background:${esc(s.color)}"></span> ` : ''}<b>${esc(s.callsign)}</b></td>`;
+    const labelCell = s => `<td>${esc(s.label)}${s.notes ? `<br><span class="muted small">${esc(s.notes)}</span>` : ''}</td>`;
+    const actions = s => `<td class="actions"><button class="btn secondary" data-edit="${s.id}">Edit</button><button class="btn purge" data-purge="${s.id}" title="${s.kind === 'mobile'
+      ? 'Delete every stored packet from this mobile. The registration is kept.'
+      : 'Delete the stored packets this station heard directly (its coverage). The registration is kept.'}">Purge data</button><button class="btn danger" data-del="${s.id}">Delete</button></td>`;
+    const infra = stations.filter(s => s.kind !== 'mobile'), mobiles = stations.filter(s => s.kind === 'mobile');
+    $('stations-infra').innerHTML = infra.map(s => {
       const lat = s.lat ?? s.auto_lat, lon = s.lon ?? s.auto_lon;
-      const pos = s.kind === 'mobile' ? '—' : lat != null
+      const pos = lat != null
         ? `${lat.toFixed(5)}, ${lon.toFixed(5)} <span class="muted">${s.lat != null ? 'manual' : 'auto'}</span>`
         : '<span class="muted">waiting for beacon</span>';
-      return `<tr>
-        <td>${s.color ? `<span class="swatch" style="background:${esc(s.color)}"></span> ` : ''}<b>${esc(s.callsign)}</b></td>
-        <td>${KIND[s.kind]}</td><td>${esc(s.label)}${s.notes ? `<br><span class="muted small">${esc(s.notes)}</span>` : ''}</td>
-        <td>${pos}</td><td>${s.kind === 'mobile' ? '—' : fmt(s.last_beacon)}</td><td>${s.active ? 'yes' : 'no'}</td>
-        <td class="actions"><button class="btn secondary" data-edit="${s.id}">Edit</button><button class="btn purge" data-purge="${s.id}" title="${s.kind === 'mobile'
-          ? 'Delete every stored packet from this mobile. The registration is kept.'
-          : 'Delete the stored packets this station heard directly (its coverage). The registration is kept.'}">Purge data</button><button class="btn danger" data-del="${s.id}">Delete</button></td>
-      </tr>`;
-    }).join('') || '<tr><td colspan="7" class="muted">No stations yet. Add your mobiles, igates and digis above.</td></tr>';
+      return `<tr>${callCell(s)}<td>${KIND[s.kind]}</td>${labelCell(s)}
+        <td>${pos}</td><td>${fmt(s.last_beacon)}</td><td>${serverCell(s)}</td><td>${gatedCell(s.gated)}</td><td>${s.active ? 'yes' : 'no'}</td>${actions(s)}</tr>`;
+    }).join('') || '<tr><td colspan="9" class="muted">No igates or digis yet. Add them above.</td></tr>';
+    $('stations-mobile').innerHTML = mobiles.map(s =>
+      `<tr>${callCell(s)}${labelCell(s)}<td>${s.active ? 'yes' : 'no'}</td>${actions(s)}</tr>`
+    ).join('') || '<tr><td colspan="4" class="muted">No mobiles yet. Add them above.</td></tr>';
     document.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => editStation(+b.dataset.edit)));
     document.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => deleteStation(+b.dataset.del, b)));
     document.querySelectorAll('[data-purge]').forEach(b => b.addEventListener('click', () => purgeStation(+b.dataset.purge, b)));

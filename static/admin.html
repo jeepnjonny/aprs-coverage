@@ -94,10 +94,24 @@
     </section>
 
     <section class="card">
-      <h2>Registered stations</h2>
+      <h2>Igates and digipeaters</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>Callsign</th><th>Type</th><th>Label</th><th>Position</th><th>Own beacon</th><th>Active</th><th></th></tr></thead>
-        <tbody id="stations"></tbody>
+        <thead><tr><th>Callsign</th><th>Type</th><th>Label</th><th>Position</th><th>Own beacon</th><th>APRS-IS server</th><th>Gated to (7 days)</th><th>Active</th><th></th></tr></thead>
+        <tbody id="stations-infra"></tbody>
+      </table></div>
+      <p class="muted small"><b>APRS-IS server</b>: the server named after <code>qAC</code> on the last beacon, status or
+        telemetry packet the station sent over its own APRS-IS login. Your server's name comes from the duplicates
+        feed's login reply. A station that only beacons over RF never shows one.</p>
+      <p class="muted small"><b>APRS-IS</b>: copies on the main feed, where this igate was first to gate the packet.
+        <b>Dupes</b>: copies on the duplicates feed, gated after another igate already had. An igate that never shows
+        dupes while others do is probably connected to a different APRS-IS server than your aprsc.</p>
+    </section>
+
+    <section class="card">
+      <h2>Mobiles</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Callsign</th><th>Label</th><th>Active</th><th></th></tr></thead>
+        <tbody id="stations-mobile"></tbody>
       </table></div>
     </section>
 

@@ -234,6 +234,31 @@ def evaluate(line: str, now: int, registry: Registry, last: dict[str, LastFix],
 _DUPE_PREFIX_RE = re.compile(r"^dup\s")
 
 
+def login_server(line: str) -> tuple[str, str] | None:
+    """(source, server) when a line carries qAC: the source sent it over its
+    own verified APRS-IS login, and the callsign after qAC is the server it is
+    logged into. Igates send their own beacons, status and telemetry this way."""
+    head = line.split(":", 1)[0]
+    if ">" not in head:
+        return None
+    src, _, rest = head.partition(">")
+    path = rest.split(",")
+    for i, hop in enumerate(path[:-1]):
+        if hop == "qAC":
+            return src.upper(), path[i + 1].upper()
+    return None
+
+
+_SERVER_RE = re.compile(r"\bserver\s+(\S+)")
+
+
+def logresp_server(line: str) -> str | None:
+    """Server name from an APRS-IS login reply:
+    '# logresp N0CALL unverified, server T2EXAMPLE' -> 'T2EXAMPLE'."""
+    m = _SERVER_RE.search(line) if "logresp" in line else None
+    return m.group(1).upper() if m else None
+
+
 def strip_dupe_prefix(line: str) -> str:
     """aprsc marks lines on its duplicates feed with a 'dup' + tab prefix;
     accept lines with or without it."""

@@ -18,7 +18,8 @@ from dataclasses import asdict, dataclass
 
 from . import config, db
 from .logbuf import APRS as aprs_log
-from .packets import LastFix, Outcome, RecentTx, Registry, evaluate, strip_dupe_prefix, tx_key
+from .packets import (LastFix, Outcome, RecentTx, Registry, evaluate, login_server, logresp_server,
+                      strip_dupe_prefix, tx_key)
 
 log = logging.getLogger("ingest")
 
@@ -26,6 +27,7 @@ VERSION = "aprs-coverage 0.1"
 READ_TIMEOUT_S = 90  # aprsc sends a keepalive about every 20 s
 REJECT_KEEP = 2000
 FEEDS_KEY = "feeds"
+OWN_SERVER_KEY = "own_server"  # server name your aprsc gave in its login reply
 
 
 @dataclass
@@ -95,6 +97,7 @@ class FeedConn:
         self._writer: asyncio.StreamWriter | None = None
         self._wake = asyncio.Event()
         self._restart = False
+        self.on_server = None  # called with the server name from the login reply
 
     def status(self) -> dict:
         return {"connected": self.connected, "server": self.server, "server_line": self.server_line,
@@ -176,6 +179,9 @@ class FeedConn:
                     aprs_log.add("srv", self.tag, line)
                     if "logresp" in line or "aprsc" in line or "javAPRSSrvr" in line:
                         self.server_line = line[2:]
+                    name = logresp_server(line)
+                    if name and self.on_server:
+                        self.on_server(name)
                     continue
                 on_line(line)
         finally:
@@ -194,6 +200,9 @@ class Ingester:
         self.closing = False
         self.main = FeedConn("feed")
         self.dupes = FeedConn("dupes")
+        # The duplicates feed is your own aprsc, so its name is "your server".
+        self.dupes.on_server = self._set_own_server
+        self.own_server = ""
         self.active_filter = ""
         self.last_packet_ts: int | None = None
         self.counts = Counter()
@@ -221,6 +230,11 @@ class Ingester:
         if (old.dupe_enabled, old.dupe_server, old.dupe_port, old.dupe_login) != \
                 (fs.dupe_enabled, fs.dupe_server, fs.dupe_port, fs.dupe_login):
             self.dupes.restart()
+
+    def _set_own_server(self, name: str) -> None:
+        if name != self.own_server:
+            self.own_server = name
+            db.set_setting(OWN_SERVER_KEY, name)
 
     def status(self) -> dict:
         host, port = self.feeds.main_target()
@@ -293,6 +307,7 @@ class Ingester:
         now = now or int(time.time())
         pre = "dupe_" if dupe else ""
         self.counts[f"{pre}lines"] += 1
+        self._note_login_server(line, now)
         out = evaluate(line, now, self.registry, self.last, dupe=dupe)
         if out.kind == "accept":
             r = out.record
@@ -328,6 +343,15 @@ class Ingester:
                     self.counts["rejects_since_prune"] = 0
             self.counts["rejects_since_prune"] += 1
         return out.kind
+
+    def _note_login_server(self, line: str, now: int) -> None:
+        """Remember which APRS-IS server a registered igate/digi is logged into,
+        from the qAC on packets it sends over its own login."""
+        ls = login_server(line)
+        if ls and ls[0] in self.registry.infra:
+            with db.session() as c:
+                c.execute("UPDATE stations SET is_server=?, is_server_ts=? WHERE callsign=?",
+                          (ls[1], now, ls[0]))
 
     def _store(self, r: dict, key: str, route, tx, now: int, dupe: bool) -> None:
         """Insert an accepted copy. Copies of one transmission share a txid
@@ -371,6 +395,7 @@ class Ingester:
     async def run(self) -> None:
         self.registry = load_registry()
         self.feeds = load_feeds()
+        self.own_server = db.get_setting(OWN_SERVER_KEY) or ""
         self.last = load_last_fixes()
         await asyncio.gather(
             self.main.run(self._main_target, self._on_main_line),

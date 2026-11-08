@@ -175,3 +175,37 @@ def test_dupe_feed_connection(client, monkeypatch):  # noqa: F811
     infra = {r["callsign"]: r for r in
              client.get("/api/stats", params={"start": T - 10, "end": T + 10}).json()["infra"]}
     assert infra["KJ7NYE-10"]["heard_direct"] == 1 and infra["SQB"]["heard_direct"] == 1
+
+
+def test_admin_stations_report_gating_feed(client):  # noqa: F811
+    import time
+    _register(client)
+    ing = client.ingester
+    now = int(time.time())
+    assert ing.handle_line(VIA_SQB, now=now) == "accept"
+    assert ing.handle_line(VIA_SQB_NYE, now=now + 1, dupe=True) == "accept"
+    st = {s["callsign"]: s for s in client.get("/api/admin/stations").json()}
+    assert "gated" not in st["K7ABC-9"] and "gated" not in st["SQB"]
+    kmv, nye = st["KG7KMV-13"]["gated"], st["KJ7NYE-10"]["gated"]
+    assert (kmv["main"], kmv["dupe"], kmv["main_last"]) == (1, 0, now)
+    assert (nye["main"], nye["dupe"], nye["dupe_last"]) == (0, 1, now + 1)
+
+
+def test_login_server_parsing():
+    assert packets.login_server("KG7KMV-13>APRX29,TCPIP*,qAC,K7SWI-IS:!4336.66N/11612.40W#") == ("KG7KMV-13", "K7SWI-IS")
+    assert packets.login_server(VIA_SQB) is None  # gated from RF: qAR names the igate, not a server
+    assert packets.logresp_server("# logresp N0CALL unverified, server K7swi-is") == "K7SWI-IS"
+    assert packets.logresp_server("# aprsc 2.1.19 server banner") is None
+
+
+def test_admin_stations_report_login_server(client):  # noqa: F811
+    _register(client)
+    ing = client.ingester
+    ing.dupes.on_server("K7SWI-IS")
+    ing.handle_line("KG7KMV-13>APRX29,TCPIP*,qAC,K7SWI-IS:!4336.66N/11612.40W#", now=T)
+    ing.handle_line("KJ7NYE-10>APDW16,TCPIP*,qAC,T2BOISE:>status", now=T, dupe=True)
+    st = {s["callsign"]: s for s in client.get("/api/admin/stations").json()}
+    assert (st["KG7KMV-13"]["is_server"], st["KG7KMV-13"]["is_server_ts"]) == ("K7SWI-IS", T)
+    assert st["KJ7NYE-10"]["is_server"] == "T2BOISE"
+    assert st["SQB"]["is_server"] is None and st["SQB"]["own_server"] == "K7SWI-IS"
+    assert "own_server" not in st["K7ABC-9"]
