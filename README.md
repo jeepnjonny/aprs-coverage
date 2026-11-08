@@ -43,8 +43,9 @@ where the local igates and digipeaters can actually hear a mobile.
   - Live updates: new packets appear and flash as they arrive
   - Stats per igate/digi (squares, farthest distance, packets gated) and per mobile
 - **Admin page** (`/aprs-coverage/admin`, one password-protected account). Register mobiles, igates
-  and digipeaters, and see the APRS-IS connection status and recent rejects.
-  Station changes take effect immediately, without a restart.
+  and digipeaters, set the APRS-IS servers for the coverage and duplicates feeds, and see the
+  connection status of both feeds and recent rejects. Station and feed changes take effect
+  immediately, without a restart.
 - **Node config tab** (admin). Reads and changes settings on registered
   [LoRa FieldOps](https://github.com/KJ7NYE/LoRa_FieldOps_APRS_Tracker) igates and digis over APRS
   messages (role, tactical callsign, symbol, beacon path, digi mode, beacon rate, GPS source,
@@ -53,8 +54,9 @@ where the local igates and digipeaters can actually hear a mobile.
   remembered only in that browser; the app calculates its APRS-IS passcode and opens a
   separate, short-lived connection to send. Needs remote config turned on at the node
   (`remotecfg on`) and the node's unlock token for writes. Tokens are never stored or logged.
-- **Logs tab** (admin). Live viewer for the APRS-IS traffic (both connections, every line in
-  and out, with what the ingester did with each packet), the app's own log, and the accepted
+- **Logs tab** (admin). Live viewer for the APRS-IS traffic (the coverage feed and node-config
+  connection line by line, plus duplicates-feed lines from registered stations, each with what
+  the ingester did with it), the app's own log, and the accepted
   packet, rejected packet and node-config logs. Live search with highlighting (plain text or
   regex), type filter, pause, auto-scroll, wrap, UTC/local time, clear and download.
 
@@ -63,11 +65,13 @@ See [docs/PLAN.md](docs/PLAN.md) for the design, attribution rules and known lim
 ## How it works
 
 ```
-APRS-IS (read-only) -> ingester -> SQLite -> FastAPI -> nginx -> Leaflet map
+APRS-IS (read-only) ----------\
+                               > ingester -> SQLite -> FastAPI -> nginx -> Leaflet map
+aprsc duplicates feed (opt.) --/
 ```
 
-It is one Python process (FastAPI + uvicorn, with the APRS-IS reader running as a
-background task) and one SQLite file. Grid squares are computed when the map asks
+It is one Python process (FastAPI + uvicorn, with the APRS-IS readers running as
+background tasks) and one SQLite file. Grid squares are computed when the map asks
 for them, so the square size can be changed at any time without reprocessing data.
 
 | Path | What it is |
