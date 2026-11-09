@@ -2,8 +2,9 @@
 (() => {
   'use strict';
 
-  const PALETTE = ['#2f81f7', '#f85149', '#3fb950', '#d29922', '#a371f7', '#f778ba',
-                   '#39c5cf', '#ff7b39', '#8ddb4a', '#e3b341', '#6e7bff', '#ff5c8a'];
+  // Hues kept well apart so no two read as "the same colour" on the map.
+  const PALETTE = ['#2f81f7', '#e5534b', '#2da44e', '#f2d024', '#8250df', '#e85aad',
+                   '#1fb6c9', '#f0883e', '#8b5a2b', '#1f3a93', '#9acd32', '#4b0082'];
   const SHADE = [[31, 1.0, '31+'], [12, 0.82, '12–30'], [5, 0.64, '5–11'], [2, 0.45, '2–4'], [1, 0.28, '1']];
   const UNTRACED = '__untraced__', OTHER = '__other__';
   const $ = id => document.getElementById(id);
@@ -95,10 +96,38 @@
     for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
     return PALETTE[h % PALETTE.length];
   }
+  // Infrastructure stations each get their own colour: an admin-set colour wins,
+  // the rest take palette entries in callsign order, skipping any too close to a
+  // colour an admin chose. Past the palette, golden-angle hues keep them apart.
+  const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const near = (a, b) => { const [p, q] = [rgb(a), rgb(b)]; return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) < 60; };
+  let colorCache = { src: null, map: new Map() };
+  function infraColors() {
+    if (colorCache.src === STATIONS) return colorCache.map;
+    const out = new Map(), used = [];
+    const infra = STATIONS.filter(s => s.kind !== 'mobile')
+      .sort((a, b) => a.callsign.localeCompare(b.callsign));
+    for (const s of infra) if (s.color) { out.set(s.callsign, s.color); used.push(s.color); }
+    let pi = 0, extra = 0;
+    for (const s of infra) {
+      if (s.color) continue;
+      let c = null;
+      while (pi < PALETTE.length && !c) {
+        const cand = PALETTE[pi++];
+        if (!used.some(u => near(u, cand))) c = cand;
+      }
+      if (!c) c = `hsl(${Math.round((extra++ * 137.508) % 360)}, 65%, 45%)`;
+      out.set(s.callsign, c);
+    }
+    colorCache = { src: STATIONS, map: out };
+    return out;
+  }
   function keyColor(key) {
     if (key === '(untraced)') return '#8b949e';
     const st = findStation(key);  // wildcard / object registrations keep their colour
-    return (st && st.color) || hashColor(key);
+    if (st && st.color) return st.color;
+    if (st && st.kind !== 'mobile') return infraColors().get(st.callsign) || hashColor(key);
+    return hashColor(key);
   }
   const shadeFactor = n => {
     if (!S.shade) return 1;
@@ -249,7 +278,7 @@
     if (!S.stations) return;
     for (const s of STATIONS) {
       if (s.kind === 'mobile' || s.lat == null) continue;
-      const color = s.color || hashColor(s.callsign);
+      const color = s.color || infraColors().get(s.callsign) || hashColor(s.callsign);
       const m = L.circleMarker([s.lat, s.lon], {
         renderer: stationRenderer,
         radius: s.kind === 'digi' ? 6 : 8, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1,
