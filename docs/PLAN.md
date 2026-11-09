@@ -18,7 +18,7 @@ only holds recent data.
 | Whose packets count | Only registered mobiles. All other traffic is ignored. |
 | Grid | Fixed squares measured in meters (100 m, 250 m, 500 m, 1 km, 2 km; chosen on the map). No Maidenhead. |
 | Map access | Public. The same data is already public on aprs.fi. |
-| Admin | One admin account with a password. |
+| Accounts | Self sign-up with admin approval. Roles: admin (everything) and node owner (only their own devices; remote config only if an admin allows it). |
 | Stack | Python (FastAPI + aprslib) and SQLite. No Docker, no Postgres. |
 | Hosting | systemd service behind nginx, served under `/aprs-coverage/` of the existing `apps.k7swi.org` site through an included location snippet. The prefix is stripped by nginx and the pages use relative URLs. |
 | Deploys | `git pull` plus `update.sh`, optionally run by cron through `auto-update.sh`. No GitHub Actions. |
@@ -99,7 +99,11 @@ A packet is rejected, and logged in `rejects` for the admin page, if:
 - `packets`: one row per accepted packet with time, mobile, position, speed, course,
   igate, heard_by, hop count, chain and the raw line. Exact positions are kept, so any
   grid size can be computed when the map asks.
-- `rejects`, `settings` (admin password hash and similar), `sessions`.
+- `users`: username, base callsign, name, email, scrypt hash, role (`admin`/`node_owner`),
+  status (`pending`/`active`/`disabled`), remote-config flag.
+- `stations.owner_id` and `stations.status` (`pending`/`approved`/`rejected`, with the
+  admin's reason). Only approved, active stations reach the filter, the map and remote config.
+- `rejects`, `settings`, `sessions` (one per login, tied to a user).
 
 Grid squares are computed in SQL at query time (`app/grid.py`). Square width is fixed by
 `GRID_REF_LAT`, so squares stay the same shape across the region. Changing it moves
@@ -120,13 +124,16 @@ every square boundary.
 
 ## Admin (`/aprs-coverage/admin`)
 
-- Password login: scrypt hash, server-side sessions in an HttpOnly cookie scoped to the
-  app's path (from `X-Forwarded-Prefix`), login rate limit.
+- Username and password login: scrypt hash, server-side sessions in an HttpOnly cookie scoped
+  to the app's path (from `X-Forwarded-Prefix`), login rate limit per IP and per username.
+- Sign-up: pending until an admin approves; rate-limited per IP, paused while 25 sign-ups wait,
+  and a hidden honeypot field for bots. Node owners get 404 for devices that aren't theirs.
   Write requests require a header that cross-site forms cannot send.
 - Add, edit and remove stations. Toggle active, set label, color and manual position.
 - APRS-IS feed status: connected, active filter, server banner, counters, last packet.
 - Recent rejected packets with their reasons.
-- Change the password from the page, or on the server with `python -m app.manage set-password`.
+- Change your password on the Account tab; admins reset other users' passwords on the Users
+  tab, or on the server with `python -m app.manage set-password USER`.
 
 ## Logs (`app/logbuf.py`, admin "Logs" tab)
 

@@ -4,31 +4,72 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
-  <title>APRS Coverage Admin</title>
+  <title>APRS Coverage Account</title>
   <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
 <main class="admin">
   <header>
-    <h1>APRS Coverage Admin</h1>
-    <span><a href="./">← Map</a> <button id="logout" class="btn secondary" hidden>Log out</button></span>
+    <h1>APRS Coverage</h1>
+    <span class="head-user"><a href="./">← Map</a> <span id="whoami" class="muted small"></span>
+      <button id="logout" class="btn secondary" hidden>Log out</button></span>
   </header>
 
-  <section id="login-card" class="card" hidden>
+  <section id="login-card" class="card narrow" hidden>
+    <h2>Log in</h2>
     <form id="login-form">
-      <label class="field">Admin password <input type="password" id="password" autocomplete="current-password" required></label>
+      <label class="field">Username <input type="text" id="username" autocomplete="username" autocapitalize="off"
+        spellcheck="false" required></label>
+      <label class="field">Password <input type="password" id="password" autocomplete="current-password" required></label>
       <button class="btn">Log in</button> <span id="login-err" class="error"></span>
     </form>
+    <p class="muted">Run an igate, digipeater or tracker in the area? <a href="#join">Create an account</a>
+      to add it to the map. An admin reviews each sign-up first.</p>
+  </section>
+
+  <section id="join-card" class="card" hidden>
+    <h2>Create an account</h2>
+    <p class="muted small">Tell us about yourself and the devices you run. Nothing appears on the map until an admin
+      approves it. Meanwhile you can log in to check on it or fix anything.</p>
+    <form id="join-form">
+      <h3>You</h3>
+      <div class="grid-form">
+        <label class="field">Username <input type="text" id="j-username" autocomplete="username" autocapitalize="off"
+          spellcheck="false" required minlength="3" maxlength="32" pattern="[A-Za-z0-9_.\-]+"
+          title="3 to 32 letters, digits, dots, dashes or underscores"></label>
+        <label class="field">Password (10+ characters) <input type="password" id="j-password" autocomplete="new-password"
+          minlength="10" required></label>
+        <label class="field">Your callsign <input type="text" id="j-callsign" autocapitalize="characters"
+          spellcheck="false" maxlength="7" required placeholder="K7ABC (no SSID)"></label>
+        <label class="field">Name <span class="muted small">(optional)</span>
+          <input type="text" id="j-name" autocomplete="name" maxlength="80"></label>
+        <label class="field">Email <span class="muted small">(optional)</span>
+          <input type="email" id="j-email" autocomplete="email" maxlength="120"
+            title="Only so the admin can reach you. Nothing is emailed."></label>
+      </div>
+      <label class="hp" aria-hidden="true">Website <input type="text" id="j-website" tabindex="-1" autocomplete="off"></label>
+      <h3>Your devices</h3>
+      <div id="j-devices"></div>
+      <button type="button" class="btn secondary" id="j-add">Add another device</button>
+      <div class="form-end"><button class="btn">Submit for approval</button> <span id="join-err" class="error"></span></div>
+    </form>
+    <p class="muted small">Already have an account? <a href="#login">Log in</a></p>
   </section>
 
   <div id="app" hidden>
+    <p id="pending-banner" class="banner" hidden>Your account is waiting for an admin to approve it. Until then you
+      can change or add devices on the My devices tab.</p>
     <nav class="tabs admin-tabs" role="tablist">
-      <button class="tab active" role="tab" data-tab="stations">Stations</button>
-      <button class="tab" role="tab" data-tab="nodecfg">Node config</button>
-      <button class="tab" role="tab" data-tab="logs">Logs</button>
+      <button class="tab" role="tab" data-tab="stations" data-for="admin">Stations</button>
+      <button class="tab" role="tab" data-tab="approvals" data-for="admin">Approvals <span id="appr-count" class="badge" hidden></span></button>
+      <button class="tab" role="tab" data-tab="users" data-for="admin">Users</button>
+      <button class="tab" role="tab" data-tab="mine" data-for="owner">My devices</button>
+      <button class="tab" role="tab" data-tab="nodecfg" data-for="config">Node config</button>
+      <button class="tab" role="tab" data-tab="logs" data-for="admin">Logs</button>
+      <button class="tab" role="tab" data-tab="account">Account</button>
     </nav>
 
-    <div data-pane="stations">
+    <div data-pane="stations" hidden>
     <section class="card">
       <h2>APRS-IS feed</h2>
       <dl class="kv" id="status"></dl>
@@ -82,6 +123,7 @@
           <label class="field inline">Map color <input type="color" id="s-color" value="#2f81f7"></label>
           <label class="field infra-only">Latitude <input type="number" step="any" id="s-lat" placeholder="auto from beacon"></label>
           <label class="field infra-only">Longitude <input type="number" step="any" id="s-lon" placeholder="auto from beacon"></label>
+          <label class="field">Owner <select id="s-owner"></select></label>
         </div>
         <label class="check"><input type="checkbox" id="s-usecolor"> Use a fixed color (otherwise one is assigned)</label>
         <label class="check"><input type="checkbox" id="s-active" checked> Active (included in the APRS-IS filter)</label>
@@ -123,13 +165,84 @@
         <tbody id="rejects"></tbody>
       </table></div>
     </section>
+    </div>
 
+    <div data-pane="approvals" hidden>
     <section class="card">
-      <h2>Change password</h2>
-      <form id="pw-form" class="grid-form">
-        <label class="field">Current <input type="password" id="pw-cur" autocomplete="current-password" required></label>
-        <label class="field">New (10+ chars) <input type="password" id="pw-new" autocomplete="new-password" minlength="10" required></label>
-        <div class="field"><button class="btn">Change</button> <span id="pw-msg"></span></div>
+      <h2>New accounts</h2>
+      <div id="appr-users"></div>
+    </section>
+    <section class="card">
+      <h2>New devices from approved users</h2>
+      <div id="appr-devices"></div>
+    </section>
+    <section class="card">
+      <h2>Rejected devices</h2>
+      <p class="muted small">Their owners see the reason, and can fix and resubmit them, or delete them.</p>
+      <div id="appr-rejected"></div>
+    </section>
+    <p id="appr-msg" aria-live="polite"></p>
+    </div>
+
+    <div data-pane="users" hidden>
+    <section class="card" id="u-edit" hidden>
+      <h2 id="u-title"></h2>
+      <form id="u-form">
+        <input type="hidden" id="u-id">
+        <div class="grid-form">
+          <label class="field">Callsign <input type="text" id="u-callsign" autocapitalize="characters" spellcheck="false"
+            maxlength="7" placeholder="base callsign, no SSID"></label>
+          <label class="field">Name <input type="text" id="u-name" maxlength="80"></label>
+          <label class="field">Email <input type="email" id="u-email" maxlength="120"></label>
+          <label class="field">Role
+            <select id="u-role"><option value="node_owner">Node owner</option><option value="admin">Admin</option></select></label>
+          <label class="field">Status
+            <select id="u-status"><option value="pending">Pending</option><option value="active">Active</option>
+              <option value="disabled">Disabled</option></select></label>
+        </div>
+        <label class="check"><input type="checkbox" id="u-config"> Remote config: may read and change settings on
+          their own igates and digis over the air, sending from their own callsign</label>
+        <button class="btn">Save</button>
+        <button type="button" class="btn secondary" id="u-cancel">Close</button>
+        <span id="u-msg"></span>
+      </form>
+      <form id="u-pw-form" class="grid-form">
+        <label class="field">Set a new password <input type="password" id="u-pw" autocomplete="new-password"
+          minlength="10" required placeholder="10+ characters"></label>
+        <div class="field"><button class="btn secondary">Set password</button>
+          <span class="muted small">Logs them out everywhere.</span> <span id="u-pw-msg"></span></div>
+      </form>
+    </section>
+    <section class="card">
+      <h2>Users</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>User</th><th>Callsign</th><th>Role</th><th>Status</th><th>Remote config</th><th>Devices</th><th>Last login</th><th></th></tr></thead>
+        <tbody id="users"></tbody>
+      </table></div>
+      <p class="muted small">Deleting a user also deletes their pending and rejected devices. Their approved devices
+        stay on the map, managed by the admins. New sign-ups are approved or rejected on the Approvals tab.</p>
+    </section>
+    </div>
+
+    <div data-pane="mine" hidden>
+    <section class="card">
+      <h2>My devices</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Callsign</th><th>Type</th><th>Label</th><th>Status</th><th>Last heard</th><th></th></tr></thead>
+        <tbody id="my-devices"></tbody>
+      </table></div>
+      <p class="muted small">Once a device is approved, its callsign and type are fixed. To change them, add a new
+        device and delete the old one. Deleting a device takes it off the map; the coverage it already recorded
+        stays.</p>
+    </section>
+    <section class="card">
+      <h2 id="my-form-title">Add a device</h2>
+      <form id="my-form">
+        <input type="hidden" id="my-id">
+        <div id="my-fields"></div>
+        <button class="btn" id="my-save">Submit for approval</button>
+        <button type="button" class="btn secondary" id="my-cancel" hidden>Cancel edit</button>
+        <span id="my-msg"></span>
       </form>
     </section>
     </div>
@@ -144,6 +257,7 @@
         <label class="field">APRS-IS passcode
           <input type="text" id="rc-pass" readonly tabindex="-1" placeholder="from callsign"></label>
       </div>
+      <p class="muted small" id="rc-own-help" hidden></p>
       <p class="muted small">Commands are sent from this callsign, so use one you are licensed for. The
         passcode is calculated from it. Use an SSID that nothing else is logged in to APRS-IS with (not your
         igate's), or APRS-IS drops that station's connection while you send. Remembered in this browser only,
@@ -226,8 +340,65 @@
       <p class="small error" id="lg-err"></p>
     </section>
     </div>
+
+    <div data-pane="account" hidden>
+    <section class="card">
+      <h2>Account</h2>
+      <form id="acct-form">
+        <div class="grid-form">
+          <label class="field">Username <input type="text" id="a-username" readonly></label>
+          <label class="field">Callsign <input type="text" id="a-callsign" readonly title="Ask an admin to change it"></label>
+          <label class="field">Name <input type="text" id="a-name" maxlength="80" autocomplete="name"></label>
+          <label class="field">Email <input type="email" id="a-email" maxlength="120" autocomplete="email"></label>
+        </div>
+        <button class="btn">Save</button> <span id="acct-msg"></span>
+      </form>
+    </section>
+    <section class="card">
+      <h2>Change password</h2>
+      <form id="pw-form" class="grid-form">
+        <label class="field">Current <input type="password" id="pw-cur" autocomplete="current-password" required></label>
+        <label class="field">New (10+ chars) <input type="password" id="pw-new" autocomplete="new-password" minlength="10" required></label>
+        <div class="field"><button class="btn">Change</button> <span id="pw-msg"></span></div>
+      </form>
+    </section>
+    <section class="card" id="withdraw-card" hidden>
+      <h2>Withdraw sign-up</h2>
+      <p class="muted small">Deletes your account and the devices you submitted.</p>
+      <button class="btn danger" id="withdraw">Withdraw</button> <span id="withdraw-msg"></span>
+    </section>
+    </div>
   </div>
 </main>
+
+<template id="device-tpl">
+  <fieldset class="device">
+    <legend>Device <button type="button" class="linkbtn" data-remove>remove</button></legend>
+    <div class="grid-form">
+      <label class="field">Callsign <input type="text" data-f="callsign" required autocapitalize="characters"
+        spellcheck="false" placeholder="K7ABC-10"></label>
+      <label class="field">Type
+        <select data-f="kind">
+          <option value="igate">Igate</option>
+          <option value="digi">Digipeater</option>
+          <option value="digi_igate">Digi + igate</option>
+          <option value="mobile">Mobile / tracker</option>
+        </select>
+      </label>
+      <label class="field">Label <input type="text" data-f="label" maxlength="200" placeholder="e.g. Shafer Butte"></label>
+      <label class="field inline">Map color <input type="color" data-f="color" value="#2f81f7"></label>
+      <label class="field infra-only">Latitude <input type="number" step="any" min="-90" max="90" data-f="lat"
+        placeholder="auto from beacon"></label>
+      <label class="field infra-only">Longitude <input type="number" step="any" min="-180" max="180" data-f="lon"
+        placeholder="auto from beacon"></label>
+    </div>
+    <label class="check"><input type="checkbox" data-f="usecolor"> Use a fixed color (otherwise one is assigned)</label>
+    <label class="check"><input type="checkbox" data-f="active" checked> Active (on the map and in the APRS-IS filter)</label>
+    <label class="field">Notes <span class="muted small">(antenna, height, anything the admin should know)</span>
+      <input type="text" data-f="notes" maxlength="200"></label>
+    <p class="muted small" data-help></p>
+  </fieldset>
+</template>
 <script src="static/admin.js"></script>
 </body>
 </html>

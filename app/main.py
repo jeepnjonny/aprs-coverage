@@ -5,7 +5,9 @@ import logging
 import math
 import re
 import signal
+import sqlite3
 import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
@@ -85,7 +87,8 @@ UNTRACED, OTHER = "__untraced__", "__other__"
 
 
 def _infra_calls(c) -> list[str]:
-    return [r["callsign"] for r in c.execute("SELECT callsign FROM stations WHERE kind != 'mobile'")]
+    return [r["callsign"] for r in c.execute(
+        "SELECT callsign FROM stations WHERE kind != 'mobile' AND status='approved'")]
 
 
 def _csv(v: str | None) -> list[str] | None:
@@ -154,7 +157,7 @@ def api_config():
 @app.get("/api/stations")
 def api_stations():
     with db.session() as c:
-        rows = c.execute("SELECT * FROM stations WHERE active=1 ORDER BY kind, callsign").fetchall()
+        rows = c.execute("SELECT * FROM stations WHERE active=1 AND status='approved' ORDER BY kind, callsign").fetchall()
         heard = dict(c.execute("SELECT heard_by, MAX(ts) FROM packets WHERE heard_by IS NOT NULL GROUP BY heard_by").fetchall())
         gated = dict(c.execute("SELECT igate, MAX(ts) FROM packets GROUP BY igate").fetchall())
         mob = dict(c.execute("SELECT mobile, MAX(ts) FROM packets GROUP BY mobile").fetchall())
@@ -189,7 +192,7 @@ def api_mobiles():
 def api_coverage(
     start: int | None = None,
     end: int | None = None,
-    cell: int = 500,
+    cell: int = 1000,
     mobiles: str | None = None,
     heard_by: str | None = None,
     match: str = Query("first", pattern="^(first|any)$"),
@@ -236,7 +239,7 @@ def api_coverage(
 def api_stats(
     start: int | None = None,
     end: int | None = None,
-    cell: int = 500,
+    cell: int = 1000,
     mobiles: str | None = None,
 ):
     """Per igate/digi and per mobile summary, using the current time and mobile filters."""
@@ -253,7 +256,7 @@ def api_stats(
         }
         gated = dict(c.execute(
             f"SELECT igate, COUNT(DISTINCT txid) FROM packets WHERE {where} GROUP BY igate", args).fetchall())
-        infra = c.execute("SELECT * FROM stations WHERE kind != 'mobile'").fetchall()
+        infra = c.execute("SELECT * FROM stations WHERE kind != 'mobile' AND status='approved'").fetchall()
 
         ky = grid.M_PER_DEG_LAT / 1000
         infra_rows = []
@@ -320,67 +323,7 @@ async def api_live(request: Request):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-# ── admin API ────────────────────────────────────────────────────────────────
-class LoginIn(BaseModel):
-    password: str
-
-
-_PREFIX_OK = re.compile(r"^(/[A-Za-z0-9._~-]+)+/?$")
-
-
-def _cookie_path(request: Request) -> str:
-    """Scope the session cookie to the URL prefix nginx serves the app under
-    (sent as X-Forwarded-Prefix, e.g. /aprs-coverage), so it is not sent to the
-    other apps on the same host. Without the header (local runs) it is '/'."""
-    prefix = request.headers.get("x-forwarded-prefix", "").strip()
-    if not _PREFIX_OK.match(prefix):
-        return "/"
-    return prefix.rstrip("/") + "/"
-
-
-@app.post("/api/admin/login")
-def admin_login(body: LoginIn, request: Request, response: Response):
-    ip = auth.client_ip(request)
-    auth.check_rate_limit(ip)
-    stored = db.get_setting("admin_password")
-    if not stored:
-        raise HTTPException(503, "No admin password set. On the server run: python -m app.manage set-password")
-    if not auth.verify_password(body.password, stored):
-        auth.record_failure(ip)
-        raise HTTPException(401, "Wrong password")
-    token = auth.create_session()
-    response.set_cookie(auth.COOKIE, token, max_age=config.SESSION_DAYS * 86400, httponly=True,
-                        secure=config.COOKIE_SECURE, samesite="strict", path=_cookie_path(request))
-    return {"ok": True}
-
-
-@app.post("/api/admin/logout")
-def admin_logout(request: Request, response: Response):
-    auth.destroy_session(request.cookies.get(auth.COOKIE))
-    response.delete_cookie(auth.COOKIE, path=_cookie_path(request))
-    return {"ok": True}
-
-
-@app.get("/api/admin/me")
-def admin_me(request: Request):
-    return {"logged_in": auth.is_logged_in(request)}
-
-
-class PasswordIn(BaseModel):
-    current: str
-    new: str
-
-
-@app.post("/api/admin/password", dependencies=[Depends(auth.require_admin)])
-def admin_password(body: PasswordIn):
-    if not auth.verify_password(body.current, db.get_setting("admin_password") or ""):
-        raise HTTPException(400, "Current password is wrong")
-    if len(body.new) < 10:
-        raise HTTPException(400, "New password must be at least 10 characters")
-    db.set_setting("admin_password", auth.hash_password(body.new))
-    return {"ok": True}
-
-
+# ── stations: validation and listing ─────────────────────────────────────────
 CALL_RE = re.compile(r"^[A-Z0-9]{1,6}(-[A-Z0-9]{1,2})?$")
 MOBILE_RE = re.compile(r"^[A-Z0-9]{1,6}(-[A-Z0-9]{1,2}|-\*|\*)?$")
 # Object tracker: SENDER:OBJECT, e.g. K7SWI:CAR01 or K7SWI-*:CAR*. Object names
@@ -404,6 +347,14 @@ class StationIn(BaseModel):
     def _call(cls, v):
         return v.strip().upper()
 
+    @field_validator("label", "notes")
+    @classmethod
+    def _text(cls, v):
+        v = v.strip()
+        if len(v) > 200:
+            raise ValueError("label and notes are limited to 200 characters")
+        return v
+
     @field_validator("color")
     @classmethod
     def _color(cls, v):
@@ -423,24 +374,54 @@ class StationIn(BaseModel):
         if not ok:
             hint = (" (mobiles may end in * or -* for any SSID; object trackers are"
                     " SENDER:OBJECT, e.g. K7SWI:CAR01)") if self.kind == "mobile" else ""
-            raise HTTPException(422, f"Invalid callsign{hint}")
+            raise HTTPException(422, f"Invalid callsign {self.callsign or '(empty)'}{hint}")
+        if self.kind == "mobile":
+            self.lat = self.lon = None
         if (self.lat is None) != (self.lon is None):
             raise HTTPException(422, "Give both lat and lon, or neither")
         if self.lat is not None and not (-90 <= self.lat <= 90 and -180 <= self.lon <= 180):
             raise HTTPException(422, "lat/lon out of range")
 
 
-@app.get("/api/admin/stations", dependencies=[Depends(auth.require_admin)])
-def admin_list_stations():
-    """Igates and digis get `own_server`, the name of your aprsc (from the
-    duplicates feed's login reply), to compare with their `is_server`.
-    Igates also get `gated`: packets from registered mobiles they gated in
-    the last GATED_WINDOW_S, split by feed. "main" copies are the ones APRS-IS
-    passed on (this igate was first); "dupe" copies came from the aprsc
-    duplicates feed (another igate got there first)."""
+class AdminStationIn(StationIn):
+    owner_id: int | None = None  # only changed when the request includes it
+
+
+def _insert_station(c, body: StationIn, *, owner_id: int | None, status: str) -> int:
+    try:
+        cur = c.execute(
+            "INSERT INTO stations(callsign,kind,label,notes,color,lat,lon,active,owner_id,status) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (body.callsign, body.kind, body.label, body.notes, body.color, body.lat, body.lon,
+             int(body.active), owner_id, status),
+        )
+    except sqlite3.IntegrityError as e:
+        if "UNIQUE" in str(e):
+            raise HTTPException(409, f"{body.callsign} is already registered")
+        raise
+    return cur.lastrowid
+
+
+def _check_owner(c, owner_id: int | None) -> None:
+    if owner_id is not None and not c.execute("SELECT 1 FROM users WHERE id=?", (owner_id,)).fetchone():
+        raise HTTPException(422, "No such user")
+
+
+GATED_WINDOW_S = 7 * 86400
+
+
+def _station_rows(where: str = "1", args: tuple = ()) -> list[dict]:
+    """Stations with their owner's username. Igates and digis get `own_server`,
+    the name of your aprsc (from the duplicates feed's login reply), to compare
+    with their `is_server`. Igates also get `gated`: packets from registered
+    mobiles they gated in the last GATED_WINDOW_S, split by feed. "main" copies
+    are the ones APRS-IS passed on (this igate was first); "dupe" copies came
+    from the aprsc duplicates feed (another igate got there first)."""
     since = int(time.time()) - GATED_WINDOW_S
     with db.session() as c:
-        rows = [dict(r) for r in c.execute("SELECT * FROM stations ORDER BY kind, callsign")]
+        rows = [dict(r) for r in c.execute(
+            f"SELECT s.*, u.username AS owner FROM stations s LEFT JOIN users u ON u.id = s.owner_id "
+            f"WHERE {where} ORDER BY s.kind, s.callsign", args)]
         gated: dict[str, dict] = {}
         for r in c.execute(
             "SELECT igate, dupe, COUNT(*) AS n, MAX(ts) AS last FROM packets WHERE ts >= ? GROUP BY igate, dupe",
@@ -458,41 +439,279 @@ def admin_list_stations():
     return rows
 
 
-GATED_WINDOW_S = 7 * 86400
+# ── accounts: login, sign-up, your own account and devices ───────────────────
+_PREFIX_OK = re.compile(r"^(/[A-Za-z0-9._~-]+)+/?$")
+
+
+def _cookie_path(request: Request) -> str:
+    """Scope the session cookie to the URL prefix nginx serves the app under
+    (sent as X-Forwarded-Prefix, e.g. /aprs-coverage), so it is not sent to the
+    other apps on the same host. Without the header (local runs) it is '/'."""
+    prefix = request.headers.get("x-forwarded-prefix", "").strip()
+    if not _PREFIX_OK.match(prefix):
+        return "/"
+    return prefix.rstrip("/") + "/"
+
+
+def _start_session(request: Request, response: Response, user_id: int) -> None:
+    token = auth.create_session(user_id)
+    response.set_cookie(auth.COOKIE, token, max_age=config.SESSION_DAYS * 86400, httponly=True,
+                        secure=config.COOKIE_SECURE, samesite="strict", path=_cookie_path(request))
+
+
+def _user(c, uid: int) -> dict:
+    row = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "No such user")
+    return dict(row)
+
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+MAX_DEVICES = 20  # per user
+MAX_PENDING_ACCOUNTS = 25  # sign-ups pause while this many wait for approval
+SIGNUPS_PER_IP, SIGNUP_WINDOW = 5, 3600
+_signups: dict[str, deque] = defaultdict(deque)
+
+
+def _clean_profile(callsign: str, name: str, email: str, need_call: bool) -> tuple[str, str, str]:
+    call = callsign.strip().upper()
+    if (call or need_call) and not auth.BASE_CALL_RE.match(call):
+        raise HTTPException(422, "Callsign must be a base callsign without an SSID, e.g. K7ABC")
+    name, email = name.strip(), email.strip()
+    if len(name) > 80:
+        raise HTTPException(422, "Name is limited to 80 characters")
+    if email and (len(email) > 120 or not EMAIL_RE.match(email)):
+        raise HTTPException(422, "That email address doesn't look right")
+    return call, name, email
+
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/login")
+def login(body: LoginIn, request: Request, response: Response):
+    ip = auth.client_ip(request)
+    ukey = "u:" + body.username.strip().lower()
+    auth.check_rate_limit(ip, ukey)
+    u = auth.authenticate(body.username, body.password)
+    if u is None:
+        auth.record_failure(ip, ukey)
+        if not auth.has_admin():
+            raise HTTPException(503, "No admin account yet. On the server run: python -m app.manage set-password")
+        raise HTTPException(401, "Wrong username or password")
+    if u["status"] == "disabled":
+        raise HTTPException(403, "This account is disabled")
+    _start_session(request, response, u["id"])
+    return {"user": auth.public_user(dict(u))}
+
+
+@app.post("/api/logout")
+def logout(request: Request, response: Response):
+    auth.destroy_session(request.cookies.get(auth.COOKIE))
+    response.delete_cookie(auth.COOKIE, path=_cookie_path(request))
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def me(request: Request):
+    u = auth.current_user(request)
+    return {"user": auth.public_user(u) if u else None}
+
+
+class SignupIn(BaseModel):
+    username: str
+    password: str
+    callsign: str
+    name: str = ""
+    email: str = ""
+    devices: list[StationIn]
+    website: str = ""  # honeypot: hidden on the form, so only bots fill it in
+
+
+@app.post("/api/signup")
+def signup(body: SignupIn, request: Request, response: Response):
+    """Create a pending account and its pending devices, and log in, so the
+    person can watch for approval and fix their submission meanwhile."""
+    if body.website:
+        return {"user": None}  # a bot; say nothing useful
+    ip = auth.client_ip(request)
+    now = time.time()
+    recent = _signups[ip]
+    while recent and recent[0] < now - SIGNUP_WINDOW:
+        recent.popleft()
+    if len(recent) >= SIGNUPS_PER_IP:
+        raise HTTPException(429, "Too many sign-ups from here. Try again later.")
+    username = body.username.strip()
+    if not auth.USERNAME_RE.match(username):
+        raise HTTPException(422, "Username: 3 to 32 letters, digits, dots, dashes or underscores")
+    auth.check_password_rules(body.password)
+    call, name, email = _clean_profile(body.callsign, body.name, body.email, need_call=True)
+    if not body.devices:
+        raise HTTPException(422, "Add at least one device")
+    if len(body.devices) > MAX_DEVICES:
+        raise HTTPException(422, f"At most {MAX_DEVICES} devices")
+    for d in body.devices:
+        d.check()
+    calls = [d.callsign for d in body.devices]
+    if len(set(calls)) != len(calls):
+        raise HTTPException(422, "Each device needs its own callsign")
+    with db.session() as c:
+        if c.execute("SELECT COUNT(*) FROM users WHERE status='pending'").fetchone()[0] >= MAX_PENDING_ACCOUNTS:
+            raise HTTPException(503, "Too many sign-ups are waiting for approval. Try again later.")
+        if c.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
+            raise HTTPException(409, "That username is taken")
+        taken = [cs for cs in calls if c.execute("SELECT 1 FROM stations WHERE callsign=?", (cs,)).fetchone()]
+        if taken:
+            raise HTTPException(409, f"Already registered: {', '.join(taken)}. Ask an admin if it's yours.")
+        uid = auth.create_user(c, username, body.password, callsign=call, name=name, email=email)
+        for d in body.devices:
+            _insert_station(c, d, owner_id=uid, status="pending")
+        user = _user(c, uid)
+    recent.append(now)
+    logging.getLogger("admin").info("sign-up: %s (%s), devices %s", username, call, ", ".join(calls))
+    _start_session(request, response, uid)
+    return {"user": auth.public_user(user)}
+
+
+@app.get("/api/account")
+def account(user: dict = Depends(auth.require_user)):
+    return {"user": auth.public_user(user), "devices": _station_rows("s.owner_id = ?", (user["id"],))}
+
+
+class ProfileIn(BaseModel):
+    name: str = ""
+    email: str = ""
+
+
+@app.put("/api/account")
+def update_account(body: ProfileIn, user: dict = Depends(auth.require_user)):
+    _, name, email = _clean_profile("", body.name, body.email, need_call=False)
+    with db.session() as c:
+        c.execute("UPDATE users SET name=?, email=? WHERE id=?", (name, email, user["id"]))
+        return {"user": auth.public_user(_user(c, user["id"]))}
+
+
+class PasswordIn(BaseModel):
+    current: str
+    new: str
+
+
+@app.post("/api/account/password")
+def change_password(body: PasswordIn, request: Request, user: dict = Depends(auth.require_user)):
+    if not auth.verify_password(body.current, user["pw_hash"]):
+        raise HTTPException(400, "Current password is wrong")
+    auth.check_password_rules(body.new)
+    with db.session() as c:
+        c.execute("UPDATE users SET pw_hash=? WHERE id=?", (auth.hash_password(body.new), user["id"]))
+        auth.end_user_sessions(c, user["id"], keep_token=request.cookies.get(auth.COOKIE))
+    return {"ok": True}
+
+
+@app.delete("/api/account")
+def withdraw_signup(request: Request, response: Response, user: dict = Depends(auth.require_user)):
+    """A pending user can withdraw their sign-up. Approved accounts are closed by an admin."""
+    if user["status"] != "pending":
+        raise HTTPException(403, "Ask an admin to close an approved account")
+    with db.session() as c:
+        c.execute("DELETE FROM stations WHERE owner_id=?", (user["id"],))
+        c.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
+        c.execute("DELETE FROM users WHERE id=?", (user["id"],))
+    response.delete_cookie(auth.COOKIE, path=_cookie_path(request))
+    return {"ok": True}
+
+
+def _own_device(c, sid: int, user: dict):
+    """A device of this user's. Anyone else's is reported as missing."""
+    st = c.execute("SELECT * FROM stations WHERE id=? AND owner_id=?", (sid, user["id"])).fetchone()
+    if st is None:
+        raise HTTPException(404, "No such device")
+    return st
+
+
+@app.post("/api/account/devices")
+def add_device(body: StationIn, user: dict = Depends(auth.require_user)):
+    body.check()
+    with db.session() as c:
+        if c.execute("SELECT COUNT(*) FROM stations WHERE owner_id=?", (user["id"],)).fetchone()[0] >= MAX_DEVICES:
+            raise HTTPException(422, f"At most {MAX_DEVICES} devices per account")
+        sid = _insert_station(c, body, owner_id=user["id"], status="pending")
+    logging.getLogger("admin").info("%s submitted %s for approval", user["username"], body.callsign)
+    return {"id": sid}
+
+
+@app.put("/api/account/devices/{sid}")
+def edit_device(sid: int, body: StationIn, user: dict = Depends(auth.require_user)):
+    """An approved device keeps its callsign and type; everything else can
+    change. A pending or rejected one can change entirely, and goes (back)
+    into the approval queue."""
+    body.check()
+    with db.session() as c:
+        st = _own_device(c, sid, user)
+        approved = st["status"] == "approved"
+        if approved:
+            if (body.callsign, body.kind) != (st["callsign"], st["kind"]):
+                raise HTTPException(422, "The callsign and type can't change after approval. "
+                                         "Add a new device instead, then delete this one.")
+            c.execute("UPDATE stations SET label=?,notes=?,color=?,lat=?,lon=?,active=? WHERE id=?",
+                      (body.label, body.notes, body.color, body.lat, body.lon, int(body.active), sid))
+        else:
+            try:
+                c.execute(
+                    "UPDATE stations SET callsign=?,kind=?,label=?,notes=?,color=?,lat=?,lon=?,active=?,"
+                    "status='pending',review_note='' WHERE id=?",
+                    (body.callsign, body.kind, body.label, body.notes, body.color, body.lat, body.lon,
+                     int(body.active), sid))
+            except sqlite3.IntegrityError:
+                raise HTTPException(409, f"{body.callsign} is already registered")
+    if approved:
+        ingester.reload()
+    return {"ok": True}
+
+
+@app.delete("/api/account/devices/{sid}")
+def delete_device(sid: int, user: dict = Depends(auth.require_user)):
+    """Removes the registration only. Stored packets stay; an admin can purge them."""
+    with db.session() as c:
+        st = _own_device(c, sid, user)
+        c.execute("DELETE FROM stations WHERE id=?", (sid,))
+    if st["status"] == "approved":
+        ingester.reload()
+        logging.getLogger("admin").info("%s deleted %s", user["username"], st["callsign"])
+    return {"ok": True}
+
+
+# ── admin: stations ──────────────────────────────────────────────────────────
+@app.get("/api/admin/stations", dependencies=[Depends(auth.require_admin)])
+def admin_list_stations():
+    return _station_rows()
 
 
 @app.post("/api/admin/stations", dependencies=[Depends(auth.require_admin)])
-def admin_create_station(body: StationIn):
+def admin_create_station(body: AdminStationIn):
     body.check()
     with db.session() as c:
-        try:
-            cur = c.execute(
-                "INSERT INTO stations(callsign,kind,label,notes,color,lat,lon,active) VALUES(?,?,?,?,?,?,?,?)",
-                (body.callsign, body.kind, body.label, body.notes, body.color, body.lat, body.lon, int(body.active)),
-            )
-        except Exception as e:
-            if "UNIQUE" in str(e):
-                raise HTTPException(409, f"{body.callsign} is already registered")
-            raise
-        sid = cur.lastrowid
+        _check_owner(c, body.owner_id)
+        sid = _insert_station(c, body, owner_id=body.owner_id, status="approved")
     ingester.reload()
     return {"id": sid}
 
 
 @app.put("/api/admin/stations/{sid}", dependencies=[Depends(auth.require_admin)])
-def admin_update_station(sid: int, body: StationIn):
+def admin_update_station(sid: int, body: AdminStationIn):
     body.check()
+    sets = "callsign=?,kind=?,label=?,notes=?,color=?,lat=?,lon=?,active=?"
+    args = [body.callsign, body.kind, body.label, body.notes, body.color, body.lat, body.lon, int(body.active)]
     with db.session() as c:
+        if "owner_id" in body.model_fields_set:
+            _check_owner(c, body.owner_id)
+            sets += ",owner_id=?"
+            args.append(body.owner_id)
         try:
-            cur = c.execute(
-                "UPDATE stations SET callsign=?,kind=?,label=?,notes=?,color=?,lat=?,lon=?,active=? WHERE id=?",
-                (body.callsign, body.kind, body.label, body.notes, body.color, body.lat, body.lon,
-                 int(body.active), sid),
-            )
-        except Exception as e:
-            if "UNIQUE" in str(e):
-                raise HTTPException(409, f"{body.callsign} is already registered")
-            raise
+            cur = c.execute(f"UPDATE stations SET {sets} WHERE id=?", (*args, sid))
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, f"{body.callsign} is already registered")
         if cur.rowcount == 0:
             raise HTTPException(404, "No such station")
     ingester.reload()
@@ -505,6 +724,36 @@ def admin_delete_station(sid: int):
         if c.execute("DELETE FROM stations WHERE id=?", (sid,)).rowcount == 0:
             raise HTTPException(404, "No such station")
     ingester.reload()
+    return {"ok": True}
+
+
+@app.post("/api/admin/stations/{sid}/approve")
+def admin_approve_station(sid: int, admin: dict = Depends(auth.require_admin)):
+    with db.session() as c:
+        st = c.execute("SELECT callsign FROM stations WHERE id=?", (sid,)).fetchone()
+        if st is None:
+            raise HTTPException(404, "No such station")
+        c.execute("UPDATE stations SET status='approved', review_note='' WHERE id=?", (sid,))
+    ingester.reload()
+    logging.getLogger("admin").info("%s approved %s", admin["username"], st["callsign"])
+    return {"ok": True}
+
+
+class RejectIn(BaseModel):
+    note: str = ""
+
+
+@app.post("/api/admin/stations/{sid}/reject")
+def admin_reject_station(sid: int, body: RejectIn, admin: dict = Depends(auth.require_admin)):
+    """The device stays, marked rejected with the reason, so its owner sees why
+    and can fix and resubmit it, or delete it."""
+    with db.session() as c:
+        st = c.execute("SELECT callsign FROM stations WHERE id=?", (sid,)).fetchone()
+        if st is None:
+            raise HTTPException(404, "No such station")
+        c.execute("UPDATE stations SET status='rejected', review_note=? WHERE id=?", (body.note.strip()[:300], sid))
+    ingester.reload()
+    logging.getLogger("admin").info("%s rejected %s", admin["username"], st["callsign"])
     return {"ok": True}
 
 
@@ -544,6 +793,88 @@ def admin_purge_station_packets(sid: int):
             ingester.last.pop(m, None)
     logging.getLogger("admin").info("purged %d packets for %s", deleted, st["callsign"])
     return {"deleted": deleted}
+
+
+# ── admin: users ─────────────────────────────────────────────────────────────
+@app.get("/api/admin/users", dependencies=[Depends(auth.require_admin)])
+def admin_users():
+    with db.session() as c:
+        rows = c.execute(
+            """SELECT u.*,
+                      (SELECT COUNT(*) FROM stations s WHERE s.owner_id = u.id) AS devices,
+                      (SELECT COUNT(*) FROM stations s WHERE s.owner_id = u.id AND s.status = 'pending') AS pending_devices
+               FROM users u ORDER BY u.status = 'pending' DESC, u.username COLLATE NOCASE""").fetchall()
+    return [auth.public_user(dict(r)) | {"can_config": bool(r["can_config"]), "created_at": r["created_at"],
+                                         "last_login": r["last_login"], "devices": r["devices"],
+                                         "pending_devices": r["pending_devices"]} for r in rows]
+
+
+class UserEditIn(BaseModel):
+    callsign: str | None = None
+    name: str | None = None
+    email: str | None = None
+    role: str | None = None
+    status: str | None = None
+    can_config: bool | None = None
+
+
+@app.put("/api/admin/users/{uid}")
+def admin_edit_user(uid: int, body: UserEditIn, admin: dict = Depends(auth.require_admin)):
+    """Approve (status active), disable, change role or remote-config access,
+    or fix the profile. Changes apply on the user's next request."""
+    with db.session() as c:
+        old = _user(c, uid)
+        new = old | {k: v for k, v in body.model_dump().items() if v is not None}
+        if new["role"] not in auth.ROLES:
+            raise HTTPException(422, f"role must be one of {', '.join(auth.ROLES)}")
+        if new["status"] not in auth.STATUSES:
+            raise HTTPException(422, f"status must be one of {', '.join(auth.STATUSES)}")
+        call, name, email = _clean_profile(new["callsign"], new["name"], new["email"],
+                                           need_call=new["role"] == "node_owner")
+        was_admin = old["role"] == "admin" and old["status"] == "active"
+        if was_admin and (new["role"] != "admin" or new["status"] != "active") and not auth.active_admins(c, uid):
+            raise HTTPException(409, "That would leave no active admin")
+        c.execute("UPDATE users SET callsign=?, name=?, email=?, role=?, status=?, can_config=? WHERE id=?",
+                  (call, name, email, new["role"], new["status"], int(bool(new["can_config"])), uid))
+        if new["status"] == "disabled":
+            auth.end_user_sessions(c, uid)
+    changed = {k: new[k] for k in ("role", "status", "can_config") if new[k] != old[k]}
+    if changed:
+        logging.getLogger("admin").info("%s changed user %s: %s", admin["username"], old["username"], changed)
+    return {"ok": True}
+
+
+class SetPasswordIn(BaseModel):
+    new: str
+
+
+@app.post("/api/admin/users/{uid}/password")
+def admin_set_password(uid: int, body: SetPasswordIn, request: Request, admin: dict = Depends(auth.require_admin)):
+    auth.check_password_rules(body.new)
+    with db.session() as c:
+        _user(c, uid)
+        c.execute("UPDATE users SET pw_hash=? WHERE id=?", (auth.hash_password(body.new), uid))
+        auth.end_user_sessions(c, uid, keep_token=request.cookies.get(auth.COOKIE) if uid == admin["id"] else None)
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{uid}")
+def admin_delete_user(uid: int, admin: dict = Depends(auth.require_admin)):
+    """Also how a sign-up is rejected. Their pending and rejected devices go
+    with them; approved ones stay, managed by the admins."""
+    if uid == admin["id"]:
+        raise HTTPException(409, "You can't delete your own account")
+    with db.session() as c:
+        u = _user(c, uid)
+        if u["role"] == "admin" and u["status"] == "active" and not auth.active_admins(c, uid):
+            raise HTTPException(409, "That would leave no active admin")
+        c.execute("DELETE FROM stations WHERE owner_id=? AND status != 'approved'", (uid,))
+        c.execute("UPDATE stations SET owner_id=NULL WHERE owner_id=?", (uid,))
+        c.execute("DELETE FROM sessions WHERE user_id=?", (uid,))
+        c.execute("DELETE FROM users WHERE id=?", (uid,))
+    ingester.reload()
+    logging.getLogger("admin").info("%s deleted user %s", admin["username"], u["username"])
+    return {"ok": True}
 
 
 @app.get("/api/admin/status", dependencies=[Depends(auth.require_admin)])
@@ -622,32 +953,42 @@ def admin_set_feeds(body: FeedsIn):
     return _feeds_out()
 
 
-# ── remote node config (admin "Node config" tab) ─────────────────────────────
-# The operator's sending callsign comes with every request (the page keeps it in
-# the browser); the server never stores it, and computes its passcode itself.
-def _config_node(callsign: str) -> str:
-    """Only active, registered igates/digis can be configured."""
+# ── remote node config ("Node config" tab) ──────────────────────────────────
+# Admins can configure every node and send from any callsign. A node owner an
+# admin has allowed can configure only their own nodes, sending from their own
+# callsign (any SSID). The sending callsign comes with every request (the page
+# keeps it in the browser); the server never stores it, and computes its
+# passcode itself.
+def _config_node(callsign: str, user: dict) -> str:
+    """Only active, approved igates/digis, and for a node owner only their own."""
     call = callsign.strip().upper()
     with db.session() as c:
         row = c.execute(
-            "SELECT callsign FROM stations WHERE callsign=? AND kind != 'mobile' AND active=1", (call,)
+            "SELECT callsign, owner_id FROM stations WHERE callsign=? AND kind != 'mobile' AND active=1 "
+            "AND status='approved'", (call,)
         ).fetchone()
-    if row is None:
-        raise HTTPException(404, f"{call} is not an active registered igate or digi")
+    if row is None or (user["role"] != "admin" and row["owner_id"] != user["id"]):
+        raise HTTPException(404, f"{call} is not an active registered igate or digi of yours"
+                            if user["role"] != "admin" else f"{call} is not an active registered igate or digi")
     return row["callsign"]
 
 
-def _login(login: str) -> str:
+def _login(login: str, user: dict) -> str:
     """Refuse a sending callsign that a station here is already logged in to
-    APRS-IS with: the server would drop that station's connection."""
+    APRS-IS with: the server would drop that station's connection. A node
+    owner must send from their own callsign."""
     with db.session() as c:
         reserved = {r[0] for r in c.execute("SELECT callsign FROM stations WHERE kind != 'mobile'")}
     if config.APRS_LOGIN:
         reserved.add(config.APRS_LOGIN)
     try:
-        return remotecfg.check_login(login, reserved)
+        call = remotecfg.check_login(login, reserved)
     except remotecfg.CommandError as e:
         raise HTTPException(e.status, str(e))
+    if user["role"] != "admin" and call.split("-", 1)[0] != user["callsign"]:
+        raise HTTPException(403, f"Send from your own callsign, {user['callsign'] or '(none set)'}, "
+                                 "with any SSID that nothing else is logged in with")
+    return call
 
 
 async def _remote_call(coro):
@@ -657,18 +998,36 @@ async def _remote_call(coro):
         raise HTTPException(e.status, str(e))
 
 
-@app.get("/api/admin/remote", dependencies=[Depends(auth.require_admin)])
-def admin_remote(login: str | None = None):
+@app.get("/api/remote")
+def remote_overview(login: str | None = None, user: dict = Depends(auth.require_config)):
+    admin = user["role"] == "admin"
     with db.session() as c:
         nodes = [dict(r) for r in c.execute(
-            """SELECT s.callsign, s.kind, s.label, n.fields, n.updated_at FROM stations s
+            f"""SELECT s.callsign, s.kind, s.label, n.fields, n.updated_at FROM stations s
                LEFT JOIN node_config n ON n.callsign = s.callsign
-               WHERE s.kind != 'mobile' AND s.active=1 ORDER BY s.callsign""")]
-        logs = [dict(r) for r in c.execute("SELECT * FROM node_config_log ORDER BY id DESC LIMIT 50")]
+               WHERE s.kind != 'mobile' AND s.active=1 AND s.status='approved'
+               {'' if admin else 'AND s.owner_id = ?'} ORDER BY s.callsign""",
+            () if admin else (user["id"],))]
+        calls = [n["callsign"] for n in nodes]
+        if admin:
+            logs = c.execute("SELECT * FROM node_config_log ORDER BY id DESC LIMIT 50").fetchall()
+        elif calls:
+            logs = c.execute(f"SELECT * FROM node_config_log WHERE callsign IN ({','.join('?' * len(calls))}) "
+                             "ORDER BY id DESC LIMIT 50", calls).fetchall()
+        else:
+            logs = []
     for n in nodes:
         n["fields"] = json.loads(n["fields"]) if n["fields"] else {}
     login = (login or "").strip().upper() or None
-    return {"status": remote.status(login), "fields": remotecfg.FIELDS, "nodes": nodes, "log": logs}
+    status = remote.status(login)
+    if not admin:
+        # Don't show a node owner other people's callsigns or nodes.
+        if status["connection"]["login"] != login:
+            status["connection"] = {"login": None, "server_line": ""}
+        if status["busy"] and status["busy"] not in calls:
+            status["busy"] = "another node"
+    return {"status": status, "fields": remotecfg.FIELDS, "nodes": nodes,
+            "log": [dict(r) for r in logs], "own_callsign": None if admin else user["callsign"]}
 
 
 class RemoteIn(BaseModel):
@@ -687,19 +1046,19 @@ class RemoteWriteIn(RemoteIn):
     fields: dict[str, str | int | float]
 
 
-@app.post("/api/admin/remote/{callsign}/read", dependencies=[Depends(auth.require_admin)])
-async def admin_remote_read(callsign: str, body: RemoteReadIn):
-    return await _remote_call(remote.read(_login(body.login), _config_node(callsign), body.codes))
+@app.post("/api/remote/{callsign}/read")
+async def remote_read(callsign: str, body: RemoteReadIn, user: dict = Depends(auth.require_config)):
+    return await _remote_call(remote.read(_login(body.login, user), _config_node(callsign, user), body.codes))
 
 
-@app.post("/api/admin/remote/{callsign}/unlock", dependencies=[Depends(auth.require_admin)])
-async def admin_remote_unlock(callsign: str, body: RemoteUnlockIn):
-    return await _remote_call(remote.unlock(_login(body.login), _config_node(callsign), body.token))
+@app.post("/api/remote/{callsign}/unlock")
+async def remote_unlock(callsign: str, body: RemoteUnlockIn, user: dict = Depends(auth.require_config)):
+    return await _remote_call(remote.unlock(_login(body.login, user), _config_node(callsign, user), body.token))
 
 
-@app.post("/api/admin/remote/{callsign}/write", dependencies=[Depends(auth.require_admin)])
-async def admin_remote_write(callsign: str, body: RemoteWriteIn):
-    return await _remote_call(remote.write(_login(body.login), _config_node(callsign), body.fields))
+@app.post("/api/remote/{callsign}/write")
+async def remote_write(callsign: str, body: RemoteWriteIn, user: dict = Depends(auth.require_config)):
+    return await _remote_call(remote.write(_login(body.login, user), _config_node(callsign, user), body.fields))
 
 
 # ── logs (admin "Logs" tab) ──────────────────────────────────────────────────

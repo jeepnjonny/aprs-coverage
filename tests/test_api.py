@@ -17,7 +17,8 @@ def client(tmp_path, monkeypatch):
     for m in (db, auth, ingest, remotecfg, main):
         importlib.reload(m)
     with TestClient(main.app) as c:
-        db.set_setting("admin_password", auth.hash_password("correct horse battery"))
+        with db.session() as conn:
+            auth.create_user(conn, "admin", "correct horse battery", role="admin", status="active")
         c.ingester = main.ingester
         yield c
 
@@ -26,12 +27,12 @@ H = {"X-Requested-With": "fetch"}
 
 
 def login(c):
-    assert c.post("/api/admin/login", json={"password": "correct horse battery"}).status_code == 200
+    assert c.post("/api/login", json={"username": "admin", "password": "correct horse battery"}).status_code == 200
 
 
 def test_admin_requires_login(client):
     assert client.get("/api/admin/stations").status_code == 401
-    assert client.post("/api/admin/login", json={"password": "nope"}).status_code == 401
+    assert client.post("/api/login", json={"username": "admin", "password": "nope"}).status_code == 401
 
 
 def test_csrf_header_required(client):
@@ -126,12 +127,12 @@ def test_public_endpoints(client):
 
 
 def test_cookie_scoped_to_forwarded_prefix(client):
-    pw = {"password": "correct horse battery"}
-    r = client.post("/api/admin/login", json=pw, headers={"X-Forwarded-Prefix": "/aprs-coverage"})
+    pw = {"username": "admin", "password": "correct horse battery"}
+    r = client.post("/api/login", json=pw, headers={"X-Forwarded-Prefix": "/aprs-coverage"})
     assert "Path=/aprs-coverage/" in r.headers["set-cookie"]
-    r = client.post("/api/admin/login", json=pw)
+    r = client.post("/api/login", json=pw)
     assert "Path=/;" in r.headers["set-cookie"]
-    r = client.post("/api/admin/login", json=pw, headers={"X-Forwarded-Prefix": "/x; Domain=evil"})
+    r = client.post("/api/login", json=pw, headers={"X-Forwarded-Prefix": "/x; Domain=evil"})
     assert "Path=/;" in r.headers["set-cookie"]
 
 

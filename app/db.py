@@ -21,7 +21,10 @@ CREATE TABLE IF NOT EXISTS stations (
     is_server   TEXT,                          -- APRS-IS server named in its last qAC packet (its own login)
     is_server_ts INTEGER,
     active      INTEGER NOT NULL DEFAULT 1,
-    created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    owner_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,  -- NULL = managed by the admins
+    status      TEXT NOT NULL DEFAULT 'approved' CHECK (status IN ('pending','approved','rejected')),
+    review_note TEXT NOT NULL DEFAULT ''       -- admin's reason when rejected
 );
 
 CREATE TABLE IF NOT EXISTS packets (
@@ -75,8 +78,23 @@ CREATE TABLE IF NOT EXISTS node_config_log (
     detail   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id         INTEGER PRIMARY KEY,
+    username   TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    callsign   TEXT NOT NULL DEFAULT '',       -- base callsign, no SSID; remote config sends from it
+    name       TEXT NOT NULL DEFAULT '',
+    email      TEXT NOT NULL DEFAULT '',       -- contact only; nothing is emailed
+    pw_hash    TEXT NOT NULL,
+    role       TEXT NOT NULL DEFAULT 'node_owner' CHECK (role IN ('admin','node_owner')),
+    status     TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','disabled')),
+    can_config INTEGER NOT NULL DEFAULT 0,     -- node owner may use remote config on their nodes
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    last_login INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
+    user_id    INTEGER REFERENCES users(id) ON DELETE CASCADE,
     expires    INTEGER NOT NULL
 );
 """
@@ -118,6 +136,25 @@ def _migrate(c: sqlite3.Connection) -> None:
     if "is_server" not in scols:
         c.execute("ALTER TABLE stations ADD COLUMN is_server TEXT")
         c.execute("ALTER TABLE stations ADD COLUMN is_server_ts INTEGER")
+    if "owner_id" not in scols:
+        c.execute("ALTER TABLE stations ADD COLUMN owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+    if "status" not in scols:
+        c.execute("ALTER TABLE stations ADD COLUMN status TEXT NOT NULL DEFAULT 'approved' "
+                  "CHECK (status IN ('pending','approved','rejected'))")
+        c.execute("ALTER TABLE stations ADD COLUMN review_note TEXT NOT NULL DEFAULT ''")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_stations_owner ON stations(owner_id)")
+    # Sessions belong to a user now. Older ones (from the single shared admin
+    # password) have none and are dropped: everyone logs in again.
+    if "user_id" not in {r["name"] for r in c.execute("PRAGMA table_info(sessions)")}:
+        c.execute("ALTER TABLE sessions ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+    c.execute("DELETE FROM sessions WHERE user_id IS NULL")
+    # The old single admin password becomes the first admin account, "admin".
+    old = c.execute("SELECT value FROM settings WHERE key='admin_password'").fetchone()
+    if old:
+        if not c.execute("SELECT 1 FROM users WHERE username='admin'").fetchone():
+            c.execute("INSERT INTO users(username, pw_hash, role, status) VALUES('admin', ?, 'admin', 'active')",
+                      (old["value"],))
+        c.execute("DELETE FROM settings WHERE key='admin_password'")
     # Rows stored before duplicates were tracked are each their own transmission.
     c.execute("UPDATE packets SET txid = id WHERE txid IS NULL")
 

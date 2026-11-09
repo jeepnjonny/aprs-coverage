@@ -12,7 +12,7 @@
   // ── persisted UI state (per-viewer convenience only) ──────────────────────
   const DEFAULTS = {
     preset: '604800', from: null, to: null, color: 'single', singleColor: '#2f81f7',
-    shade: true, cell: 500, opacity: 60, borders: true, stations: true, live: true,
+    shade: true, cell: 1000, opacity: 60, borders: true, stations: true, live: true,
     basemap: 'osm', match: 'first', mobiles: null, heard: null,   // null = all selected
   };
   let S = { ...DEFAULTS };
@@ -380,7 +380,7 @@
         const c = L.circleMarker([p.lat, p.lon], { renderer: liveRenderer, radius: 7, color: keyColor(p.heard_by || '(untraced)'), weight: 2, fillOpacity: 0.9, className: 'pulse' })
           .bindTooltip(`${esc(stationName(p.mobile))} via ${p.heard_by ? esc(stationName(p.heard_by)) : 'untraced hop'}${p.igate !== p.heard_by ? ' → ' + esc(stationName(p.igate)) : ''}`);
         liveLayer.addLayer(c);
-        setTimeout(() => liveLayer.removeLayer(c), 120000);
+        setTimeout(() => liveLayer.removeLayer(c), 30000);
       }
       if (!MOBILES.includes(p.mobile)) { MOBILES.push(p.mobile); MOBILES.sort(); buildFilters(); }
       if (isRelative()) { clearTimeout(liveTimer); liveTimer = setTimeout(refresh, 2500); }
@@ -414,7 +414,7 @@
   function initControls() {
     const cellSel = $('cell');
     cellSel.innerHTML = CFG.cell_sizes.map(m => `<option value="${m}">${m >= 1000 ? m / 1000 + ' km' : m + ' m'}</option>`).join('');
-    if (!CFG.cell_sizes.includes(+S.cell)) S.cell = 500;
+    if (!CFG.cell_sizes.includes(+S.cell)) S.cell = 1000;
 
     bind('preset', 'preset', { after: () => { syncVisibility(); if (S.preset !== 'custom') refresh(); } });
     bind('color-mode', 'color', { after: () => { syncVisibility(); buildFilters(); refresh(); } });
@@ -454,6 +454,14 @@
     });
     syncVisibility();
   }
+
+  // ── account link: "Join / Log in", or where a logged-in user manages things ──
+  fetch('api/me').then(r => r.json()).then(({ user }) => {
+    if (!user) return;
+    const a = $('account-link');
+    a.textContent = user.role === 'admin' ? 'Admin' : user.status === 'pending' ? 'My sign-up' : 'My nodes';
+    a.title = `Logged in as ${user.username}`;
+  }).catch(() => {});
 
   // ── boot ──────────────────────────────────────────────────────────────────
   (async () => {

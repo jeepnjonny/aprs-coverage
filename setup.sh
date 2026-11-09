@@ -46,10 +46,10 @@ sudo systemctl enable aprs-coverage
 # ── deploy code ──────────────────────────────────────────────────────────────
 bash "${SRC}/update.sh"
 
-# ── admin password ───────────────────────────────────────────────────────────
+# ── first admin account ──────────────────────────────────────────────────────
 if [ -t 0 ]; then
-  if ! sudo -u "${SERVICE_USER}" bash -c "cd ${INSTALL_DIR} && .venv/bin/python -c \"from app import db; db.init(); import sys; sys.exit(0 if db.get_setting('admin_password') else 1)\""; then
-    echo "Set the admin password:"
+  if ! sudo -u "${SERVICE_USER}" bash -c "cd ${INSTALL_DIR} && .venv/bin/python -c \"from app import auth, db; db.init(); import sys; sys.exit(0 if auth.has_admin() else 1)\""; then
+    echo "Set a password for the admin account (username: admin):"
     sudo -u "${SERVICE_USER}" bash -c "cd ${INSTALL_DIR} && .venv/bin/python -m app.manage set-password"
   fi
 fi

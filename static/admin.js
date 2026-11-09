@@ -13,24 +13,156 @@
       body: body ? JSON.stringify(body) : undefined,
     });
     const data = await r.json().catch(() => ({}));
-    if (r.status === 401 && !url.endsWith('/login')) { showLogin(); throw new Error('Login required'); }
+    if (r.status === 401 && !/api\/(login|signup)$/.test(url)) { showLoggedOut(); throw new Error('Login required'); }
     if (!r.ok) {
       const d = data.detail;
-      throw new Error(typeof d === 'string' ? d : Array.isArray(d) ? d.map(x => x.msg).join('; ') : `HTTP ${r.status}`);
+      throw new Error(typeof d === 'string' ? d : Array.isArray(d) ? d.map(x => x.msg.replace(/^Value error, /, '')).join('; ') : `HTTP ${r.status}`);
     }
     return data;
   }
 
-  function showLogin() { $('login-card').hidden = false; $('app').hidden = true; $('logout').hidden = true; $('password').focus(); }
-  function showApp() { $('login-card').hidden = true; $('app').hidden = false; $('logout').hidden = false; loadAll(); showTab(['nodecfg', 'logs'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'stations'); }
+  // Shows a message in a status span; success messages fade after a few seconds.
+  function say(id, text, isErr) {
+    const m = $(id);
+    m.className = isErr ? 'error' : 'okmsg';
+    m.textContent = text;
+    if (!isErr && text) setTimeout(() => { if (m.textContent === text) m.textContent = ''; }, 4000);
+  }
+
+  // Two-click confirm (instead of window.confirm): the first click arms the
+  // button for 4 s and returns false; a second click within that returns true.
+  function armed(btn, confirmText = 'Confirm') {
+    if (btn.dataset.armed === '1') return true;
+    const orig = btn.textContent;
+    btn.dataset.armed = '1';
+    btn.textContent = confirmText;
+    setTimeout(() => { btn.dataset.armed = ''; btn.textContent = orig; }, 4000);
+    return false;
+  }
+
+  // ── who is logged in ──────────────────────────────────────────────────────
+  // Admins see everything. Node owners see their own devices, their account,
+  // and Node config if an admin allowed it. A pending user sees their
+  // submission and their account.
+  let ME = null;
+  const isAdmin = () => ME?.role === 'admin';
+  const TABS = () => [...document.querySelectorAll('.admin-tabs .tab')];
+
+  function showLoggedOut() {
+    ME = null;
+    $('app').hidden = true; $('logout').hidden = true; $('whoami').textContent = '';
+    const join = location.hash === '#join';
+    $('login-card').hidden = join;
+    $('join-card').hidden = !join;
+    if (join) { if (!$('j-devices').children.length) addJoinDevice(); $('j-username').focus(); }
+    else $('username').focus();
+  }
+  window.addEventListener('hashchange', () => { if (!ME) showLoggedOut(); });
+
+  function tabAllowed(b) {
+    const f = b.dataset.for;
+    if (!f) return true;
+    if (f === 'admin') return isAdmin();
+    if (f === 'owner') return !isAdmin();
+    if (f === 'config') return ME.can_config && ME.status === 'active';
+    return false;
+  }
+
+  function showApp(user) {
+    ME = user;
+    $('login-card').hidden = true; $('join-card').hidden = true;
+    $('app').hidden = false; $('logout').hidden = false;
+    $('whoami').textContent = `${user.username}${isAdmin() ? ' (admin)' : ''}`;
+    $('pending-banner').hidden = user.status !== 'pending';
+    $('withdraw-card').hidden = user.status !== 'pending';
+    TABS().forEach(b => { b.hidden = !tabAllowed(b); });
+    if (isAdmin()) loadAll();
+    const want = location.hash.slice(1);
+    const tab = TABS().find(b => !b.hidden && b.dataset.tab === want);
+    showTab(tab ? want : isAdmin() ? 'stations' : 'mine');
+  }
 
   $('login-form').addEventListener('submit', async e => {
     e.preventDefault();
     $('login-err').textContent = '';
-    try { await api('POST', 'api/admin/login', { password: $('password').value }); $('password').value = ''; showApp(); }
-    catch (err) { $('login-err').textContent = err.message; }
+    try {
+      const r = await api('POST', 'api/login', { username: $('username').value.trim(), password: $('password').value });
+      $('password').value = '';
+      showApp(r.user);
+    } catch (err) { $('login-err').textContent = err.message; }
   });
-  $('logout').addEventListener('click', async () => { await api('POST', 'api/admin/logout'); showLogin(); });
+  $('logout').addEventListener('click', async () => {
+    await api('POST', 'api/logout').catch(() => {});
+    try { history.replaceState(null, '', location.pathname + location.search); } catch { /* ignore */ }
+    showLoggedOut();
+  });
+
+  // ── device fields (sign-up and My devices) ────────────────────────────────
+  const KIND_HELP = {
+    mobile: 'Mobiles: use an exact callsign-SSID (K7ABC-9), or K7ABC* / K7ABC-* to cover every SSID. For trackers that beacon as APRS objects, use SENDER:OBJECT (K7SWI:CAR01, or K7SWI:CAR* for a fleet). Packets from mobiles are what draw coverage.',
+    infra: 'Igates/digis: exact callsign-SSID as it appears in packet paths. Leave the position blank to take it from the station’s own beacons.',
+  };
+
+  function deviceBlock(d, removable) {
+    const fs = $('device-tpl').content.firstElementChild.cloneNode(true);
+    const f = k => fs.querySelector(`[data-f="${k}"]`);
+    if (d) {
+      f('callsign').value = d.callsign; f('kind').value = d.kind; f('label').value = d.label; f('notes').value = d.notes;
+      f('usecolor').checked = !!d.color; f('color').value = d.color || '#2f81f7';
+      f('lat').value = d.lat ?? ''; f('lon').value = d.lon ?? ''; f('active').checked = !!d.active;
+    }
+    const rm = fs.querySelector('[data-remove]');
+    rm.hidden = !removable;
+    rm.addEventListener('click', () => { fs.remove(); numberJoinDevices(); });
+    f('kind').addEventListener('change', () => deviceKindUi(fs));
+    f('color').addEventListener('input', () => { f('usecolor').checked = true; });
+    deviceKindUi(fs);
+    return fs;
+  }
+  function deviceKindUi(fs) {
+    const mobile = fs.querySelector('[data-f="kind"]').value === 'mobile';
+    fs.querySelectorAll('.infra-only').forEach(el => { el.hidden = mobile; });
+    fs.querySelector('[data-help]').textContent = KIND_HELP[mobile ? 'mobile' : 'infra'];
+  }
+  function readDevice(fs) {
+    const f = k => fs.querySelector(`[data-f="${k}"]`);
+    const num = v => v === '' ? null : Number(v);
+    const mobile = f('kind').value === 'mobile';
+    return {
+      callsign: f('callsign').value.trim(), kind: f('kind').value,
+      label: f('label').value.trim(), notes: f('notes').value.trim(),
+      color: f('usecolor').checked ? f('color').value : null,
+      lat: mobile ? null : num(f('lat').value), lon: mobile ? null : num(f('lon').value),
+      active: f('active').checked,
+    };
+  }
+
+  // ── sign-up ───────────────────────────────────────────────────────────────
+  function numberJoinDevices() {
+    const all = [...$('j-devices').children];
+    all.forEach((fs, i) => {
+      fs.querySelector('legend').firstChild.textContent = `Device ${i + 1} `;
+      fs.querySelector('[data-remove]').hidden = all.length < 2;
+    });
+  }
+  function addJoinDevice() { $('j-devices').append(deviceBlock(null, true)); numberJoinDevices(); }
+  $('j-add').addEventListener('click', addJoinDevice);
+
+  $('join-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    $('join-err').textContent = '';
+    try {
+      const r = await api('POST', 'api/signup', {
+        username: $('j-username').value.trim(), password: $('j-password').value,
+        callsign: $('j-callsign').value.trim(), name: $('j-name').value.trim(), email: $('j-email').value.trim(),
+        website: $('j-website').value, devices: [...$('j-devices').children].map(readDevice),
+      });
+      if (!r.user) { $('join-err').textContent = 'Thanks.'; return; }
+      $('join-form').reset(); $('j-devices').innerHTML = '';
+      try { history.replaceState(null, '', location.pathname + location.search); } catch { /* ignore */ }
+      showApp(r.user);
+    } catch (err) { $('join-err').textContent = err.message; }
+  });
 
   // ── status ────────────────────────────────────────────────────────────────
   async function loadStatus() {
@@ -115,10 +247,21 @@
     const line = (name, n, ts) => n ? `<br><span class="muted small">${name}: ${n}, last ${fmt(ts)}</span>` : '';
     return `<b>${tag}</b>${line('APRS-IS', g.main, g.main_last)}${line('Dupes', g.dupe, g.dupe_last)}`;
   }
+  let users = [];
+  function fillOwnerSelect() {
+    const sel = $('s-owner'), cur = sel.value;
+    sel.innerHTML = '<option value="">Admins</option>' + users.filter(u => u.role === 'node_owner')
+      .map(u => `<option value="${u.id}">${esc(u.username)}${u.callsign ? ` (${esc(u.callsign)})` : ''}${u.status !== 'active' ? ` · ${u.status}` : ''}</option>`).join('');
+    sel.value = cur;
+  }
   async function loadStations() {
-    stations = await api('GET', 'api/admin/stations');
+    const [all, us] = await Promise.all([api('GET', 'api/admin/stations'), api('GET', 'api/admin/users')]);
+    users = us;
+    fillOwnerSelect();
+    stations = all.filter(s => s.status === 'approved');
+    renderApprovals(all);
     const callCell = s => `<td>${s.color ? `<span class="swatch" style="background:${esc(s.color)}"></span> ` : ''}<b>${esc(s.callsign)}</b></td>`;
-    const labelCell = s => `<td>${esc(s.label)}${s.notes ? `<br><span class="muted small">${esc(s.notes)}</span>` : ''}</td>`;
+    const labelCell = s => `<td>${esc(s.label)}${s.notes ? `<br><span class="muted small">${esc(s.notes)}</span>` : ''}${s.owner ? `<br><span class="muted small">owner: ${esc(s.owner)}</span>` : ''}</td>`;
     const actions = s => `<td class="actions"><button class="btn secondary" data-edit="${s.id}">Edit</button><button class="btn purge" data-purge="${s.id}" title="${s.kind === 'mobile'
       ? 'Delete every stored packet from this mobile. The registration is kept.'
       : 'Delete the stored packets this station heard directly (its coverage). The registration is kept.'}">Purge data</button><button class="btn danger" data-del="${s.id}">Delete</button></td>`;
@@ -168,9 +311,7 @@
   function kindChanged() {
     const mobile = $('s-kind').value === 'mobile';
     document.querySelectorAll('.infra-only').forEach(el => { el.hidden = mobile; });
-    $('kind-help').textContent = mobile
-      ? 'Mobiles: use an exact callsign-SSID (K7ABC-9), or K7ABC* / K7ABC-* to cover every SSID. For trackers that beacon as APRS objects, use SENDER:OBJECT (K7SWI:CAR01, or K7SWI:CAR* for a fleet). Packets from mobiles are what draw coverage.'
-      : 'Igates/digis: exact callsign-SSID as it appears in packet paths. Leave the position blank to take it from the station’s own beacons.';
+    $('kind-help').textContent = KIND_HELP[mobile ? 'mobile' : 'infra'];
   }
   $('s-kind').addEventListener('change', kindChanged);
 
@@ -198,6 +339,7 @@
     $('s-lat').value = s.lat ?? '';
     $('s-lon').value = s.lon ?? '';
     $('s-active').checked = !!s.active;
+    $('s-owner').value = s.owner_id ?? '';
     $('form-title').textContent = `Edit ${s.callsign}`;
     $('s-save').textContent = 'Save changes';
     $('s-cancel').hidden = false;
@@ -237,6 +379,7 @@
       lat: mobile ? null : num($('s-lat').value),
       lon: mobile ? null : num($('s-lon').value),
       active: $('s-active').checked,
+      owner_id: $('s-owner').value === '' ? null : Number($('s-owner').value),
     };
     const id = $('s-id').value;
     try {
@@ -257,15 +400,244 @@
       || '<tr><td colspan="4" class="muted">None.</td></tr>';
   }
 
-  // ── password ──────────────────────────────────────────────────────────────
+  // ── approvals (admin) ─────────────────────────────────────────────────────
+  const POS = s => s.lat != null ? `${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}` : (s.kind === 'mobile' ? '' : 'position from beacon');
+  function deviceSummary(s) {
+    const bits = [KIND[s.kind], s.label, POS(s), s.active ? '' : 'inactive'].filter(Boolean).map(esc).join(' · ');
+    return `${s.color ? `<span class="swatch" style="background:${esc(s.color)}"></span> ` : ''}<b>${esc(s.callsign)}</b> <span class="muted">${bits}</span>`
+      + (s.notes ? `<br><span class="muted small">${esc(s.notes)}</span>` : '')
+      + (s.status === 'rejected' && s.review_note ? `<br><span class="error small">Rejected: ${esc(s.review_note)}</span>` : '');
+  }
+  const deviceActions = s => `<span class="appr-actions">
+      <button class="btn" data-approve-dev="${s.id}">Approve</button>
+      ${s.status === 'pending' ? `<input type="text" class="note" data-note="${s.id}" placeholder="Reason (shown to them)" maxlength="300">
+      <button class="btn danger" data-reject-dev="${s.id}">Reject</button>` : ''}</span>`;
+  const deviceList = list => `<ul class="appr-list">${list.map(s => `<li>${deviceSummary(s)}${deviceActions(s)}</li>`).join('')}</ul>`;
+
+  let apprAll = [];
+  function renderApprovals(all) {
+    apprAll = all;
+    const pendUsers = users.filter(u => u.status === 'pending');
+    const pendingIds = new Set(pendUsers.map(u => u.id));
+    const of = id => all.filter(s => s.owner_id === id);
+    $('appr-users').innerHTML = pendUsers.map(u => `<div class="appr">
+        <div><b>${esc(u.username)}</b> · ${esc(u.callsign)}${u.name ? ` · ${esc(u.name)}` : ''}${u.email ? ` · <a href="mailto:${esc(u.email)}">${esc(u.email)}</a>` : ''}
+          <span class="muted small">signed up ${fmt(u.created_at)}</span></div>
+        ${of(u.id).length ? deviceList(of(u.id)) : '<p class="muted small">No devices (they withdrew them all).</p>'}
+        <div class="appr-actions">
+          <button class="btn" data-approve-all="${u.id}">Approve account and devices</button>
+          <button class="btn secondary" data-approve-user="${u.id}">Approve account only</button>
+          <button class="btn danger" data-reject-user="${u.id}">Reject sign-up</button>
+        </div></div>`).join('') || '<p class="muted">None waiting.</p>';
+    const newDevs = all.filter(s => s.status === 'pending' && !pendingIds.has(s.owner_id));
+    $('appr-devices').innerHTML = newDevs.length ? deviceList(newDevs) : '<p class="muted">None waiting.</p>';
+    // Say whose each new device is.
+    $('appr-devices').querySelectorAll('li').forEach((li, i) => {
+      const s = newDevs[i];
+      li.insertAdjacentHTML('afterbegin', `<span class="muted small">${esc(s.owner || 'no owner')}:</span> `);
+    });
+    const rejected = all.filter(s => s.status === 'rejected');
+    $('appr-rejected').innerHTML = rejected.length ? deviceList(rejected) : '<p class="muted">None.</p>';
+    $('appr-rejected').querySelectorAll('li').forEach((li, i) => {
+      li.insertAdjacentHTML('afterbegin', `<span class="muted small">${esc(rejected[i].owner || 'no owner')}:</span> `);
+    });
+    const n = pendUsers.length + newDevs.length;
+    $('appr-count').hidden = !n;
+    $('appr-count').textContent = n;
+  }
+
+  async function approvalAction(fn, msg) {
+    try { await fn(); say('appr-msg', msg); }
+    catch (e) { say('appr-msg', e.message, true); }
+    loadStations().catch(() => {});
+  }
+  $('app').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b || $('app').hidden || !isAdmin()) return;
+    const d = b.dataset;
+    if (d.approveDev) approvalAction(() => api('POST', `api/admin/stations/${d.approveDev}/approve`), 'Device approved. It is on the map now.');
+    else if (d.rejectDev) {
+      const note = document.querySelector(`[data-note="${d.rejectDev}"]`)?.value.trim() || '';
+      approvalAction(() => api('POST', `api/admin/stations/${d.rejectDev}/reject`, { note }), 'Device rejected.');
+    } else if (d.approveUser) approvalAction(() => api('PUT', `api/admin/users/${d.approveUser}`, { status: 'active' }), 'Account approved.');
+    else if (d.approveAll) {
+      const uid = +d.approveAll;
+      approvalAction(async () => {
+        await api('PUT', `api/admin/users/${uid}`, { status: 'active' });
+        for (const s of apprAll.filter(s => s.owner_id === uid && s.status === 'pending')) {
+          await api('POST', `api/admin/stations/${s.id}/approve`);
+        }
+      }, 'Account and devices approved.');
+    } else if (d.rejectUser) {
+      if (!armed(b, 'Delete account and devices?')) return;
+      approvalAction(() => api('DELETE', `api/admin/users/${d.rejectUser}`), 'Sign-up rejected and deleted.');
+    }
+  });
+
+  // ── users (admin) ─────────────────────────────────────────────────────────
+  const ROLE = { admin: 'Admin', node_owner: 'Node owner' };
+  async function loadUsers() {
+    users = await api('GET', 'api/admin/users');
+    fillOwnerSelect();
+    $('users').innerHTML = users.map(u => `<tr>
+        <td><b>${esc(u.username)}</b>${u.name ? `<br><span class="muted small">${esc(u.name)}</span>` : ''}${u.email ? `<br><a class="small" href="mailto:${esc(u.email)}">${esc(u.email)}</a>` : ''}</td>
+        <td>${esc(u.callsign) || '<span class="muted">—</span>'}</td>
+        <td>${ROLE[u.role]}</td>
+        <td class="${u.status === 'active' ? '' : u.status === 'pending' ? 'warnmsg' : 'error'}">${u.status}</td>
+        <td>${u.role === 'admin' ? '<span class="muted">always</span>' : u.can_config ? 'yes' : 'no'}</td>
+        <td>${u.devices}${u.pending_devices ? ` <span class="muted small">(${u.pending_devices} pending)</span>` : ''}</td>
+        <td>${fmt(u.last_login)}</td>
+        <td class="actions"><button class="btn secondary" data-uedit="${u.id}">Edit</button>${u.id === ME.id ? '' : `<button class="btn danger" data-udel="${u.id}">Delete</button>`}</td>
+      </tr>`).join('');
+    document.querySelectorAll('[data-uedit]').forEach(b => b.addEventListener('click', () => editUser(+b.dataset.uedit)));
+    document.querySelectorAll('[data-udel]').forEach(b => b.addEventListener('click', async () => {
+      if (!armed(b)) return;
+      try { await api('DELETE', `api/admin/users/${b.dataset.udel}`); loadUsers(); loadStations().catch(() => {}); }
+      catch (e) { say('u-msg', e.message, true); }
+    }));
+  }
+
+  function editUser(id) {
+    const u = users.find(x => x.id === id);
+    if (!u) return;
+    $('u-id').value = u.id;
+    $('u-title').textContent = `Edit ${u.username}`;
+    $('u-callsign').value = u.callsign; $('u-name').value = u.name; $('u-email').value = u.email;
+    $('u-role').value = u.role; $('u-status').value = u.status; $('u-config').checked = u.can_config;
+    roleChanged();
+    $('u-msg').textContent = ''; $('u-pw-msg').textContent = ''; $('u-pw').value = '';
+    $('u-edit').hidden = false;
+    $('u-edit').scrollIntoView({ behavior: 'smooth' });
+  }
+  function roleChanged() { $('u-config').disabled = $('u-role').value === 'admin'; }
+  $('u-role').addEventListener('change', roleChanged);
+  $('u-cancel').addEventListener('click', () => { $('u-edit').hidden = true; });
+
+  $('u-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const id = +$('u-id').value;
+    try {
+      await api('PUT', `api/admin/users/${id}`, {
+        callsign: $('u-callsign').value.trim(), name: $('u-name').value.trim(), email: $('u-email').value.trim(),
+        role: $('u-role').value, status: $('u-status').value, can_config: $('u-config').checked,
+      });
+      say('u-msg', 'Saved.');
+      if (id === ME.id) {  // your own role or status changed: re-check what you may see
+        const { user } = await (await fetch('api/me')).json();
+        if (!user) { showLoggedOut(); return; }
+        if (user.role !== ME.role || user.status !== ME.status) { showApp(user); return; }
+      }
+      await loadUsers();
+      loadStations().catch(() => {});
+    } catch (err) { say('u-msg', err.message, true); }
+  });
+
+  $('u-pw-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    try {
+      await api('POST', `api/admin/users/${$('u-id').value}/password`, { new: $('u-pw').value });
+      $('u-pw').value = '';
+      say('u-pw-msg', 'Password set.');
+    } catch (err) { say('u-pw-msg', err.message, true); }
+  });
+
+  // ── my devices (node owners) ──────────────────────────────────────────────
+  let mine = [];
+  function myStatus(s) {
+    if (s.status === 'pending') return '<span class="warnmsg">Waiting for approval</span>';
+    if (s.status === 'rejected') return `<span class="error">Rejected</span>${s.review_note ? `<br><span class="small">${esc(s.review_note)}</span>` : ''}`;
+    return s.active ? '<span class="okmsg">On the map</span>' : '<span class="muted">Approved, inactive</span>';
+  }
+  async function loadMine() {
+    const d = await api('GET', 'api/account');
+    mine = d.devices;
+    $('my-devices').innerHTML = mine.map(s => `<tr>
+        <td>${s.color ? `<span class="swatch" style="background:${esc(s.color)}"></span> ` : ''}<b>${esc(s.callsign)}</b></td>
+        <td>${KIND[s.kind]}</td>
+        <td>${esc(s.label)}${s.notes ? `<br><span class="muted small">${esc(s.notes)}</span>` : ''}</td>
+        <td>${myStatus(s)}</td>
+        <td>${s.kind === 'mobile' || s.status !== 'approved' ? '<span class="muted">—</span>' : `${fmt(s.last_beacon)}${s.gated ?`<br><span class="muted small">gated ${s.gated.main + s.gated.dupe} in 7 days</span>` : ''}`}</td>
+        <td class="actions"><button class="btn secondary" data-myedit="${s.id}">Edit</button><button class="btn danger" data-mydel="${s.id}">Delete</button></td>
+      </tr>`).join('') || '<tr><td colspan="6" class="muted">No devices yet. Add one below.</td></tr>';
+    document.querySelectorAll('[data-myedit]').forEach(b => b.addEventListener('click', () => editMine(+b.dataset.myedit)));
+    document.querySelectorAll('[data-mydel]').forEach(b => b.addEventListener('click', async () => {
+      if (!armed(b)) return;
+      try {
+        await api('DELETE', `api/account/devices/${b.dataset.mydel}`);
+        if (+$('my-id').value === +b.dataset.mydel) resetMine();
+        say('my-msg', 'Deleted.');
+        loadMine();
+      } catch (e) { say('my-msg', e.message, true); }
+    }));
+  }
+
+  function resetMine() {
+    $('my-id').value = '';
+    $('my-fields').replaceChildren(deviceBlock(null, false));
+    $('my-fields').querySelector('legend').hidden = true;
+    $('my-form-title').textContent = 'Add a device';
+    $('my-save').textContent = 'Submit for approval';
+    $('my-cancel').hidden = true;
+  }
+  function editMine(id) {
+    const s = mine.find(x => x.id === id);
+    if (!s) return;
+    const fs = deviceBlock(s, false);
+    fs.querySelector('legend').hidden = true;
+    const approved = s.status === 'approved';
+    if (approved) {  // the server refuses to change these after approval
+      fs.querySelector('[data-f="callsign"]').readOnly = true;
+      fs.querySelector('[data-f="kind"]').disabled = true;
+    }
+    $('my-fields').replaceChildren(fs);
+    $('my-id').value = s.id;
+    $('my-form-title').textContent = `Edit ${s.callsign}`;
+    $('my-save').textContent = approved ? 'Save changes' : 'Resubmit for approval';
+    $('my-cancel').hidden = false;
+    $('my-form').scrollIntoView({ behavior: 'smooth' });
+  }
+  $('my-cancel').addEventListener('click', resetMine);
+  $('my-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const body = readDevice($('my-fields').firstElementChild);
+    const id = $('my-id').value;
+    try {
+      if (id) await api('PUT', `api/account/devices/${id}`, body);
+      else await api('POST', 'api/account/devices', body);
+      say('my-msg', id ? 'Saved.' : `Submitted ${body.callsign.toUpperCase()} for approval.`);
+      resetMine();
+      loadMine();
+    } catch (err) { say('my-msg', err.message, true); }
+  });
+
+  // ── account (everyone) ────────────────────────────────────────────────────
+  function fillAccount() {
+    $('a-username').value = ME.username; $('a-callsign').value = ME.callsign;
+    $('a-name').value = ME.name; $('a-email').value = ME.email;
+  }
+  $('acct-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    try {
+      ME = (await api('PUT', 'api/account', { name: $('a-name').value.trim(), email: $('a-email').value.trim() })).user;
+      fillAccount();
+      say('acct-msg', 'Saved.');
+    } catch (err) { say('acct-msg', err.message, true); }
+  });
   $('pw-form').addEventListener('submit', async e => {
     e.preventDefault();
-    const m = $('pw-msg');
     try {
-      await api('POST', 'api/admin/password', { current: $('pw-cur').value, new: $('pw-new').value });
-      m.className = 'okmsg'; m.textContent = 'Password changed.';
+      await api('POST', 'api/account/password', { current: $('pw-cur').value, new: $('pw-new').value });
+      say('pw-msg', 'Password changed. Your other sessions were logged out.');
       $('pw-form').reset();
-    } catch (err) { m.className = 'error'; m.textContent = err.message; }
+    } catch (err) { say('pw-msg', err.message, true); }
+  });
+  $('withdraw').addEventListener('click', async () => {
+    if (!armed($('withdraw'), 'Really withdraw?')) return;
+    try {
+      await api('DELETE', 'api/account');
+      try { history.replaceState(null, '', location.pathname + location.search); } catch { /* ignore */ }
+      showLoggedOut();
+    } catch (err) { say('withdraw-msg', err.message, true); }
   });
 
   function loadAll() {
@@ -282,7 +654,12 @@
       b.setAttribute('aria-selected', b.dataset.tab === name);
     });
     document.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.dataset.pane !== name; });
-    try { history.replaceState(null, '', name === 'stations' ? location.pathname + location.search : `#${name}`); } catch { /* ignore */ }
+    const home = isAdmin() ? 'stations' : 'mine';
+    try { history.replaceState(null, '', name === home ? location.pathname + location.search : `#${name}`); } catch { /* ignore */ }
+    if (name === 'approvals') loadStations().catch(e => say('appr-msg', e.message, true));
+    if (name === 'users') loadUsers().catch(e => say('u-msg', e.message, true));
+    if (name === 'mine') { if (!$('my-fields').children.length) resetMine(); loadMine().catch(e => say('my-msg', e.message, true)); }
+    if (name === 'account') fillAccount();
     if (name === 'nodecfg') loadRemote().catch(e => rcMsg(e.message, 'error'));
     if (name === 'logs') startLogs().catch(e => { $('lg-err').textContent = e.message; });
   }
@@ -308,12 +685,15 @@
     }
     return h & 0x7fff;
   }
-  const sendAs = () => { const c = $('rc-call').value.trim().toUpperCase(); return CALL_RE.test(c) ? c : ''; };
+  // Node owners must send from their own callsign (any SSID); admins from any.
+  const ownCallOk = c => !ME || isAdmin() || c.split('-')[0] === ME.callsign;
+  const sendAs = () => { const c = $('rc-call').value.trim().toUpperCase(); return CALL_RE.test(c) && ownCallOk(c) ? c : ''; };
   function callChanged() {
     const raw = $('rc-call').value.trim().toUpperCase();
-    const ok = CALL_RE.test(raw);
+    const ok = CALL_RE.test(raw) && ownCallOk(raw);
     $('rc-pass').value = ok ? aprsPasscode(raw) : '';
-    $('rc-call').setCustomValidity(raw && !ok ? 'Callsign like K7ABC or K7ABC-CF' : '');
+    $('rc-call').setCustomValidity(raw && !ok
+      ? (CALL_RE.test(raw) ? `Use your own callsign, ${ME.callsign}, with an SSID` : 'Callsign like K7ABC or K7ABC-CF') : '');
     try { ok ? localStorage.setItem(CALL_KEY, raw) : raw || localStorage.removeItem(CALL_KEY); } catch { /* storage blocked */ }
     updateButtons();
   }
@@ -326,8 +706,14 @@
 
   async function loadRemote() {
     const call = sendAs();
-    const d = await api('GET', `api/admin/remote${call ? `?login=${encodeURIComponent(call)}` : ''}`);
+    const d = await api('GET', `api/remote${call ? `?login=${encodeURIComponent(call)}` : ''}`);
     rc.fields = d.fields; rc.nodes = d.nodes; rc.status = d.status;
+    $('rc-own-help').hidden = !d.own_callsign;
+    if (d.own_callsign) {
+      $('rc-own-help').textContent = `Send from your callsign, ${d.own_callsign}, with an SSID that none of your nodes uses, e.g. ${d.own_callsign}-CF.`;
+      $('rc-call').placeholder = `e.g. ${d.own_callsign}-CF`;
+      callChanged();
+    }
     rc.unlockAt = {};
     for (const [call, secs] of Object.entries(d.status.unlocked)) rc.unlockAt[call] = Date.now() + secs * 1000;
     if (rc.selected && !node()) rc.selected = null;
@@ -354,7 +740,8 @@
         <td>${KIND[n.kind]}</td><td>${roleName(n)}</td><td>${fmt(n.updated_at)}</td>
         <td class="actions"><button class="btn secondary" data-rc="${esc(n.callsign)}">${n.callsign === rc.selected ? 'Selected' : 'Configure'}</button></td>
       </tr>`).join('')
-      || '<tr><td colspan="5" class="muted">No active igates or digis. Register them on the Stations tab.</td></tr>';
+      || `<tr><td colspan="5" class="muted">${isAdmin() ? 'No active igates or digis. Register them on the Stations tab.'
+        : 'None of your igates or digis is approved and active yet.'}</td></tr>`;
     document.querySelectorAll('[data-rc]').forEach(b => b.addEventListener('click', () => selectNode(b.dataset.rc)));
   }
 
@@ -472,7 +859,7 @@
     tick();
     const timer = setInterval(tick, 1000);
     try {
-      const r = await api('POST', `api/admin/remote/${encodeURIComponent(call)}/${kind}`, { login: sendAs(), ...body });
+      const r = await api('POST', `api/remote/${encodeURIComponent(call)}/${kind}`, { login: sendAs(), ...body });
       if (r.type === 'ERR') { rcMsg(`${call}: ${r.message}`, 'error'); return null; }
       return r;
     } catch (e) {
@@ -702,6 +1089,6 @@
   });
 
   kindChanged();
-  fetch('api/admin/me').then(r => r.json()).then(d => d.logged_in ? showApp() : showLogin()).catch(showLogin);
-  setInterval(() => { if (!$('app').hidden) loadStatus().catch(() => {}); }, 15000);
+  fetch('api/me').then(r => r.json()).then(d => d.user ? showApp(d.user) : showLoggedOut()).catch(showLoggedOut);
+  setInterval(() => { if (!$('app').hidden && isAdmin()) loadStatus().catch(() => {}); }, 15000);
 })();

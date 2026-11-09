@@ -42,11 +42,19 @@ where the local igates and digipeaters can actually hear a mobile.
   - Time presets (24 hours to all time) or a custom range
   - Live updates: new packets appear and flash as they arrive
   - Stats per igate/digi (squares, farthest distance, packets gated) and per mobile
-- **Admin page** (`/aprs-coverage/admin`, one password-protected account). Register mobiles, igates
-  and digipeaters, set the APRS-IS servers for the coverage and duplicates feeds, and see the
-  connection status of both feeds and recent rejects. Station and feed changes take effect
+- **Accounts** (`/aprs-coverage/admin`, linked from the map as *Join / Log in*). Anyone who runs
+  an igate, digi or tracker can sign up with their callsign and the devices they run. The account
+  and its devices stay pending, off the map and out of the APRS-IS filter, until an admin approves
+  them. An approved node owner manages only their own devices (label, color, position, active,
+  delete, add more for approval); a device's callsign and type are fixed once approved. Two roles:
+  **admin** and **node owner**.
+- **Admin pages.** Approve or reject sign-ups and new devices (with a reason the owner sees), manage
+  users (role, disable, password reset, remote-config access), register stations directly and
+  assign them to an owner, set the APRS-IS servers for the coverage and duplicates feeds, and see
+  the connection status of both feeds and recent rejects. Station and feed changes take effect
   immediately, without a restart.
-- **Node config tab** (admin). Reads and changes settings on registered
+- **Node config tab** (admins, and node owners an admin has ticked "remote config" for, on their
+  own nodes only, sending from their own callsign with any SSID). Reads and changes settings on registered
   [LoRa FieldOps](https://github.com/KJ7NYE/LoRa_FieldOps_APRS_Tracker) igates and digis over APRS
   messages (role, tactical callsign, symbol, beacon path, digi mode, beacon rate, GPS source,
   fixed position), using the firmware's CSR/CSU/CSW remote-config protocol, the same one
@@ -82,7 +90,8 @@ for them, so the square size can be changed at any time without reprocessing dat
 | `app/remotecfg.py` | Remote node config: CSR/CSU/CSW messages, retries, replies |
 | `app/logbuf.py` | In-memory APRS-IS traffic and app logs for the admin Logs tab |
 | `app/main.py` | Public API, live feed (SSE) and admin API |
-| `app/manage.py` | Command-line password reset |
+| `app/auth.py` | Accounts, roles and sessions |
+| `app/manage.py` | Command-line user admin (first admin, password reset, lockout recovery) |
 | `static/` | Map and admin pages (plain JS + Leaflet, no build step) |
 | `setup.sh`, `update.sh`, `auto-update.sh` | Server install, deploy and cron auto-update |
 
@@ -181,8 +190,16 @@ It refuses to run if the checkout has local edits, so edit `.env` in
 ```bash
 sudo systemctl status aprs-coverage          # is it running?
 sudo journalctl -u aprs-coverage -f          # logs, including APRS-IS connects and filter changes
-cd /srv/aprs-coverage && sudo -u www-data .venv/bin/python -m app.manage set-password   # reset admin password
-cd /srv/aprs-coverage && sudo -u www-data .venv/bin/python -m app.manage logout-all     # end all admin sessions
+cd /srv/aprs-coverage && sudo -u www-data .venv/bin/python -m app.manage set-password [USER]  # set a password (default user: admin)
+cd /srv/aprs-coverage && sudo -u www-data .venv/bin/python -m app.manage list-users           # users, roles, status
+cd /srv/aprs-coverage && sudo -u www-data .venv/bin/python -m app.manage set-role USER admin  # make someone an admin
+cd /srv/aprs-coverage && sudo -u www-data .venv/bin/python -m app.manage logout-all           # end every session
+```
+
+Upgrading from the single-password version turns that password into an admin
+account named `admin` and logs everyone out once.
+
+```bash
 ```
 
 ### Duplicates feed (your own aprsc)

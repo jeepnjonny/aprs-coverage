@@ -198,7 +198,7 @@ def node(client, monkeypatch):  # noqa: F811
 
 
 def post(c, kind, body, node=NODE):
-    return c.post(f"/api/admin/remote/{node}/{kind}", json={"login": OP, **body}, headers=H)
+    return c.post(f"/api/remote/{node}/{kind}", json={"login": OP, **body}, headers=H)
 
 
 def test_read_unlock_write_round_trip(client, node):  # noqa: F811
@@ -216,14 +216,14 @@ def test_read_unlock_write_round_trip(client, node):  # noqa: F811
     assert post(client, "unlock", {"token": "wrong"}).json()["code"] == "BADTOKEN"
     r = post(client, "unlock", {"token": "s3cret"})
     assert r.json() == {"type": "UNLOCKED", "seconds": 300, "raw": "CS UNLOCKED 300"}
-    assert client.get("/api/admin/remote", params={"login": OP}).json()["status"]["unlocked"][NODE] > 0
+    assert client.get("/api/remote", params={"login": OP}).json()["status"]["unlocked"][NODE] > 0
     # the window belongs to OP, not to another operator callsign
-    assert client.get("/api/admin/remote", params={"login": "N0CALL"}).json()["status"]["unlocked"] == {}
+    assert client.get("/api/remote", params={"login": "N0CALL"}).json()["status"]["unlocked"] == {}
 
     r = post(client, "write", {"fields": {"BR": 600, "RO": "1"}})
     assert r.json()["type"] == "OK" and r.json()["reboot"] == 5
 
-    state = client.get("/api/admin/remote", params={"login": OP}).json()
+    state = client.get("/api/remote", params={"login": OP}).json()
     n = next(x for x in state["nodes"] if x["callsign"] == NODE)
     assert n["fields"]["BR"] == "600" and n["fields"]["RO"] == "1" and n["fields"]["LA"] == "43.6000"
     assert all(x["callsign"] != "K7ABC-9" for x in state["nodes"])  # mobiles aren't configurable
@@ -251,15 +251,15 @@ def test_errors(client, node):  # noqa: F811
     assert r.status_code == 504 and "No ack" in r.json()["detail"]
 
     assert post(client, "read", {}, "K7ABC-9").status_code == 404
-    assert client.post(f"/api/admin/remote/{NODE}/read", json={"login": OP}).status_code == 403  # CSRF
+    assert client.post(f"/api/remote/{NODE}/read", json={"login": OP}).status_code == 403  # CSRF
     assert post(client, "write", {"fields": {"BR": 0}}).status_code == 422
 
 
 def test_sending_callsign_checks(client, node):  # noqa: F811
-    send = lambda call: client.post(f"/api/admin/remote/{NODE}/read", json={"login": call}, headers=H)
+    send = lambda call: client.post(f"/api/remote/{NODE}/read", json={"login": call}, headers=H)
     assert send("").status_code == 422
     assert send("NOTACALL").status_code == 422
     # logging in as a station that is already on APRS-IS would knock it off
     assert "knock" in send("KG7KMV-10").json()["detail"]
     assert "knock" in send("K7SWI-CV").json()["detail"]  # the coverage feed's own login
-    assert client.get("/api/admin/remote").status_code == 200  # no callsign needed to view
+    assert client.get("/api/remote").status_code == 200  # no callsign needed to view

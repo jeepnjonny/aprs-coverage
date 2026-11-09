@@ -63,7 +63,7 @@ def save_feeds(fs: FeedSettings) -> None:
 
 def load_registry() -> Registry:
     with db.session() as c:
-        rows = c.execute("SELECT callsign, kind FROM stations WHERE active=1").fetchall()
+        rows = c.execute("SELECT callsign, kind FROM stations WHERE active=1 AND status='approved'").fetchall()
     reg = Registry()
     for r in rows:
         if r["kind"] == "mobile":
