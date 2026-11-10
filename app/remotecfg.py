@@ -38,7 +38,7 @@ log = logging.getLogger("remotecfg")
 
 VERSION = "aprs-coverage-cfg 0.1"
 TOCALL = "APZCOV"  # APZ = experimental software
-TIMEOUT_S = 45  # whole command, including retries (nginx's default proxy timeout is 60 s)
+TIMEOUT_S = 60  # whole command, including retries (nginx snippet allows 90 s)
 RETRY_S = 12  # resend until the node acks
 MAX_SENDS = 3
 MIN_GAP_S = 3.5  # node's per-sender cooldown is 3 s

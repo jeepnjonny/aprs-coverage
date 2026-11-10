@@ -887,8 +887,9 @@ def admin_status():
 
 
 @app.get("/api/admin/rejects", dependencies=[Depends(auth.require_admin)])
-def admin_rejects(limit: int = Query(200, ge=1, le=2000)):
+def admin_rejects(limit: int = Query(10, ge=1, le=2000)):
     with db.session() as c:
+        ingest.prune_rejects(c, int(time.time()))  # age out even when no new rejects arrive
         return [dict(r) for r in c.execute("SELECT * FROM rejects ORDER BY id DESC LIMIT ?", (limit,))]
 
 
@@ -998,6 +999,9 @@ async def _remote_call(coro):
         raise HTTPException(e.status, str(e))
 
 
+LOG_ROWS = 10  # node-config activity rows shown
+
+
 @app.get("/api/remote")
 def remote_overview(login: str | None = None, user: dict = Depends(auth.require_config)):
     admin = user["role"] == "admin"
@@ -1010,10 +1014,10 @@ def remote_overview(login: str | None = None, user: dict = Depends(auth.require_
             () if admin else (user["id"],))]
         calls = [n["callsign"] for n in nodes]
         if admin:
-            logs = c.execute("SELECT * FROM node_config_log ORDER BY id DESC LIMIT 50").fetchall()
+            logs = c.execute("SELECT * FROM node_config_log ORDER BY id DESC LIMIT ?", (LOG_ROWS,)).fetchall()
         elif calls:
             logs = c.execute(f"SELECT * FROM node_config_log WHERE callsign IN ({','.join('?' * len(calls))}) "
-                             "ORDER BY id DESC LIMIT 50", calls).fetchall()
+                             "ORDER BY id DESC LIMIT ?", (*calls, LOG_ROWS)).fetchall()
         else:
             logs = []
     for n in nodes:
@@ -1028,6 +1032,20 @@ def remote_overview(login: str | None = None, user: dict = Depends(auth.require_
             status["busy"] = "another node"
     return {"status": status, "fields": remotecfg.FIELDS, "nodes": nodes,
             "log": [dict(r) for r in logs], "own_callsign": None if admin else user["callsign"]}
+
+
+@app.delete("/api/remote/log")
+def remote_log_clear(user: dict = Depends(auth.require_config)):
+    """Clear the activity history: all of it for an admin, or the entries for
+    a node owner's own nodes."""
+    with db.session() as c:
+        if user["role"] == "admin":
+            n = c.execute("DELETE FROM node_config_log").rowcount
+        else:
+            n = c.execute("""DELETE FROM node_config_log WHERE callsign IN
+                             (SELECT callsign FROM stations WHERE owner_id = ? AND kind != 'mobile')""",
+                          (user["id"],)).rowcount
+    return {"cleared": n}
 
 
 class RemoteIn(BaseModel):
@@ -1071,7 +1089,8 @@ LOG_SOURCES = {
     "app": ("Application", "This app's own log messages. In memory: the newest 2000 since the last restart."),
     "packets": ("Accepted packets", "Packets from registered mobiles that were stored as coverage. "
                 "Type is the station that heard the mobile first."),
-    "rejects": ("Rejected packets", "Packets from registered mobiles that failed a data-quality check."),
+    "rejects": ("Rejected packets", "Packets from registered mobiles that failed a data-quality check. "
+                "Kept for 2 days."),
     "nodecfg": ("Node config", "Remote-config commands sent to igates/digis, with the replies."),
 }
 _RING_LOGS = {"aprs": logbuf.APRS, "app": logbuf.APP}
@@ -1101,6 +1120,8 @@ def admin_log(source: str, after: int | None = Query(None, ge=0), limit: int = Q
         raise HTTPException(404, "No such log")
     table, conv = _DB_LOGS[source]
     with db.session() as c:
+        if table == "rejects":
+            ingest.prune_rejects(c, int(time.time()))
         if after is None:
             rows = c.execute(f"SELECT * FROM {table} ORDER BY id DESC LIMIT ?", (limit,)).fetchall()[::-1]
         else:

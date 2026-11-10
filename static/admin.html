@@ -61,6 +61,7 @@
       can change or add devices on the My devices tab.</p>
     <nav class="tabs admin-tabs" role="tablist">
       <button class="tab" role="tab" data-tab="stations" data-for="admin">Stations</button>
+      <button class="tab" role="tab" data-tab="feeds" data-for="admin">Feeds</button>
       <button class="tab" role="tab" data-tab="approvals" data-for="admin">Approvals <span id="appr-count" class="badge" hidden></span></button>
       <button class="tab" role="tab" data-tab="users" data-for="admin">Users</button>
       <button class="tab" role="tab" data-tab="mine" data-for="owner">My devices</button>
@@ -69,7 +70,7 @@
       <button class="tab" role="tab" data-tab="account">Account</button>
     </nav>
 
-    <div data-pane="stations" hidden>
+    <div data-pane="feeds" hidden>
     <section class="card">
       <h2>APRS-IS feed</h2>
       <dl class="kv" id="status"></dl>
@@ -104,6 +105,18 @@
         <button class="btn">Save and reconnect</button> <span id="feeds-msg"></span>
       </form>
     </section>
+
+    <section class="card">
+      <h2>Rejected packets (data quality)</h2>
+      <p class="muted small">Packets from registered mobiles that were dropped: not over RF, ambiguous or bad positions, impossible jumps, duplicates. Shows the newest 10; rejects are kept for 2 days (all of them are on the Logs tab).</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Time</th><th>Source</th><th>Reason</th><th>Raw</th></tr></thead>
+        <tbody id="rejects"></tbody>
+      </table></div>
+    </section>
+    </div>
+
+    <div data-pane="stations" hidden>
 
     <section class="card">
       <h2 id="form-title">Register a station</h2>
@@ -154,15 +167,6 @@
       <div class="table-wrap"><table>
         <thead><tr><th>Callsign</th><th>Label</th><th>Active</th><th></th></tr></thead>
         <tbody id="stations-mobile"></tbody>
-      </table></div>
-    </section>
-
-    <section class="card">
-      <h2>Rejected packets (data quality)</h2>
-      <p class="muted small">Packets from registered mobiles that were dropped: not over RF, ambiguous or bad positions, impossible jumps, duplicates. Shows the newest 100.</p>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Time</th><th>Source</th><th>Reason</th><th>Raw</th></tr></thead>
-        <tbody id="rejects"></tbody>
       </table></div>
     </section>
     </div>
@@ -268,7 +272,7 @@
         coverage feed stays read-only. The connection closes after 5 minutes without a command. An igate gets them over
         its own APRS-IS connection. A digi gets them only if an igate with IS-to-RF downlink has heard it directly
         in the last 30 minutes. The node must have remote config turned on (serial <code>remotecfg on</code>), and
-        writes need its unlock token. Each command can take up to 45 s, and only one runs at a time.</p>
+        writes need its unlock token. Each command can take up to 60 s, and only one runs at a time.</p>
       <div class="table-wrap"><table>
         <thead><tr><th>Node</th><th>Type</th><th>Role</th><th>Last read</th><th></th></tr></thead>
         <tbody id="rc-nodes"></tbody>
@@ -302,8 +306,12 @@
     </section>
 
     <section class="card">
-      <h2>Activity</h2>
-      <p class="muted small">Newest 50 commands and replies. Unlock tokens are not logged.</p>
+      <div class="rc-head">
+        <h2>Activity</h2>
+        <button type="button" class="btn secondary" id="rc-log-clear">Clear</button>
+      </div>
+      <p class="muted small">Newest 10 commands and replies. Unlock tokens are not logged.
+        <span id="rc-log-msg" aria-live="polite"></span></p>
       <div class="table-wrap"><table>
         <thead><tr><th>Time</th><th>Node</th><th>Sent</th><th>Result</th><th>Reply</th></tr></thead>
         <tbody id="rc-log"></tbody>

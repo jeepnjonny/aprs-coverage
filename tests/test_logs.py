@@ -56,3 +56,17 @@ def test_log_api(client):  # noqa: F811
     rej = client.get("/api/admin/logs/rejects").json()["entries"]
     assert rej[0]["level"] == "not_rf" and rej[0]["tag"] == "K7ABC-9"
     assert client.get("/api/admin/logs/nodecfg").json() == {"epoch": 0, "entries": []}
+
+
+def test_rejects_age_out_and_list_10(client):  # noqa: F811
+    import time
+    from app import db
+    login(client)
+    now = int(time.time())
+    with db.session() as c:
+        c.executemany("INSERT INTO rejects(ts,source,reason,raw) VALUES(?,?,?,?)",
+                      [(now - 3 * 86400, "OLD-9", "duplicate", "old")] * 3
+                      + [(now - 60, "K7ABC-9", "duplicate", "new")] * 12)
+    rows = client.get("/api/admin/rejects").json()
+    assert len(rows) == 10 and all(r["source"] == "K7ABC-9" for r in rows)
+    assert len(client.get("/api/admin/logs/rejects").json()["entries"]) == 12  # older than 2 days are gone

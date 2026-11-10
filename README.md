@@ -26,7 +26,7 @@ where the local igates and digipeaters can actually hear a mobile.
   that gated it.
 - **Data-quality filters.** Drops ambiguous and 0,0 positions, duplicates, impossible
   speed jumps, and (optionally) anything outside a set region. Rejects are listed
-  on the admin page with the reason.
+  on the admin page with the reason and kept for 2 days.
 - **Every station that heard a packet** (optional). APRS-IS passes on only the first copy
   of a packet. If your igates connect to your own aprsc, the app can also read its
   duplicates feed, so a packet heard by three igates credits all three. Set up on the

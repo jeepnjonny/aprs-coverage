@@ -233,6 +233,18 @@ def test_read_unlock_write_round_trip(client, node):  # noqa: F811
     assert {e["login"] for e in log} == {OP}
 
 
+def test_log_limit_and_clear(client, node):  # noqa: F811
+    from app import db
+    with db.session() as c:
+        c.executemany("INSERT INTO node_config_log(ts, login, callsign, command, result, detail) VALUES(?,?,?,?,?,?)",
+                      [(1, OP, NODE, "CSR", "READ", "")] * 12)
+    assert len(client.get("/api/remote").json()["log"]) == 10
+    assert client.delete("/api/remote/log").status_code == 403  # CSRF
+    r = client.delete("/api/remote/log", headers=H)
+    assert r.status_code == 200 and r.json()["cleared"] == 12
+    assert client.get("/api/remote").json()["log"] == []
+
+
 def test_retry_until_acked(client, node):  # noqa: F811
     node.drop = 1  # first transmission is lost
     r = post(client, "read", {"codes": ["BR"]})

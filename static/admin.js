@@ -394,7 +394,7 @@
 
   // ── rejects ───────────────────────────────────────────────────────────────
   async function loadRejects() {
-    const rows = await api('GET', 'api/admin/rejects?limit=100');
+    const rows = await api('GET', 'api/admin/rejects?limit=10');
     $('rejects').innerHTML = rows.map(r =>
       `<tr><td>${fmt(r.ts)}</td><td>${esc(r.source)}</td><td>${esc(r.reason)}</td><td><pre class="raw">${esc(r.raw)}</pre></td></tr>`).join('')
       || '<tr><td colspan="4" class="muted">None.</td></tr>';
@@ -656,6 +656,7 @@
     document.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.dataset.pane !== name; });
     const home = isAdmin() ? 'stations' : 'mine';
     try { history.replaceState(null, '', name === home ? location.pathname + location.search : `#${name}`); } catch { /* ignore */ }
+    if (name === 'feeds') { loadStatus().catch(() => {}); loadRejects().catch(() => {}); }
     if (name === 'approvals') loadStations().catch(e => say('appr-msg', e.message, true));
     if (name === 'users') loadUsers().catch(e => say('u-msg', e.message, true));
     if (name === 'mine') { if (!$('my-fields').children.length) resetMine(); loadMine().catch(e => say('my-msg', e.message, true)); }
@@ -855,7 +856,7 @@
     updateButtons();
     const t0 = Date.now();
     const verb = { read: 'Reading', unlock: 'Unlocking', write: 'Writing to' }[kind];
-    const tick = () => rcMsg(`${verb} ${call}… ${Math.round((Date.now() - t0) / 1000)} s (up to 45 s over RF)`, 'muted');
+    const tick = () => rcMsg(`${verb} ${call}… ${Math.round((Date.now() - t0) / 1000)} s (up to 60 s over RF)`, 'muted');
     tick();
     const timer = setInterval(tick, 1000);
     try {
@@ -908,6 +909,14 @@
         <td><pre class="raw">${esc(r.detail)}</pre></td></tr>`).join('')
       || '<tr><td colspan="5" class="muted">Nothing sent yet.</td></tr>';
   }
+  $('rc-log-clear').addEventListener('click', async e => {
+    if (!armed(e.currentTarget, 'Clear all?')) return;
+    try {
+      const r = await api('DELETE', 'api/remote/log');
+      renderLog([]);
+      say('rc-log-msg', `Cleared ${r.cleared} entr${r.cleared === 1 ? 'y' : 'ies'}.`);
+    } catch (err) { say('rc-log-msg', err.message, true); }
+  });
 
   // ── logs ──────────────────────────────────────────────────────────────────
   // Keeps the newest N entries of one log in memory, polls for new ones every

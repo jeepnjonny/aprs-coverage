@@ -26,8 +26,17 @@ log = logging.getLogger("ingest")
 VERSION = "aprs-coverage 0.1"
 READ_TIMEOUT_S = 90  # aprsc sends a keepalive about every 20 s
 REJECT_KEEP = 2000
+REJECT_MAX_AGE_S = 2 * 86400  # rejected packets age out after 2 days
 FEEDS_KEY = "feeds"
 OWN_SERVER_KEY = "own_server"  # server name your aprsc gave in its login reply
+
+
+def prune_rejects(c, now: int) -> int:
+    """Drop rejected packets older than REJECT_MAX_AGE_S, and all but the
+    newest REJECT_KEEP. Returns how many rows went."""
+    n = c.execute("DELETE FROM rejects WHERE ts < ?", (now - REJECT_MAX_AGE_S,)).rowcount
+    n += c.execute("DELETE FROM rejects WHERE id <= (SELECT MAX(id) FROM rejects) - ?", (REJECT_KEEP,)).rowcount
+    return n
 
 
 @dataclass
@@ -336,10 +345,7 @@ class Ingester:
                     (now, out.source, out.reason, line),
                 )
                 if self.counts["rejects_since_prune"] >= 200:
-                    c.execute(
-                        "DELETE FROM rejects WHERE id <= (SELECT MAX(id) FROM rejects) - ?",
-                        (REJECT_KEEP,),
-                    )
+                    prune_rejects(c, now)
                     self.counts["rejects_since_prune"] = 0
             self.counts["rejects_since_prune"] += 1
         return out.kind

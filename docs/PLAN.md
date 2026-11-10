@@ -170,8 +170,8 @@ firmware, with the directed-message protocol in its `src/remote_cfg_utils.cpp`:
 - Commands are sent over APRS-IS. An igate gets them over its own connection; a digi only
   if an igate with IS-to-RF downlink has heard it directly in the last 30 minutes.
 - One command in flight at a time. A command is resent every 12 s (same message number,
-  at most 3 times) until the node acks it, with a 45 s limit to stay under nginx's 60 s
-  proxy timeout. The node's reply is acked.
+  at most 3 times) until the node acks it, with a 60 s limit (the nginx snippet
+  raises proxy_read_timeout to 90 s to fit it). The node's reply is acked.
 - The firmware answers `ERR TOOFAST` to commands under 3 s apart, so we wait 3.5 s
   between commands to one node. It also acks but ignores the same text from us within
   60 s, so an exact repeat is refused with a wait time. A second full read is sent as
