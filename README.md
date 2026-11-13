@@ -41,6 +41,8 @@ where the local igates and digipeaters can actually hear a mobile.
   - Filter by mobile and by igate/digi
   - Time presets (24 hours to all time) or a custom range
   - Live updates: new packets appear and flash as they arrive
+  - "Show my location" puts a dot at your phone or computer's own position (browser
+    geolocation, never sent to the server), with an option to keep the map centered on it
   - Stats per igate/digi (squares, farthest distance, packets gated) and per mobile
 - **Admin page** (`/aprs-coverage/admin`, one password-protected account). Register mobiles, igates
   and digipeaters, set the APRS-IS servers for the coverage and duplicates feeds, and see the

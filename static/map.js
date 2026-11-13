@@ -11,7 +11,7 @@
   // ── persisted UI state (per-viewer convenience only) ──────────────────────
   const DEFAULTS = {
     preset: '604800', from: null, to: null, color: 'single', singleColor: '#2f81f7',
-    shade: true, cell: 500, opacity: 60, borders: true, stations: true, live: true,
+    shade: true, cell: 500, opacity: 60, borders: true, stations: true, live: true, me: false, follow: false,
     basemap: 'osm', match: 'first', mobiles: null, heard: null,   // null = all selected
   };
   let S = { ...DEFAULTS };
@@ -48,12 +48,14 @@
   // (A canvas on top would swallow every mouse event over the whole map.)
   map.createPane('live').style.zIndex = 420;
   map.createPane('stations').style.zIndex = 430;
+  map.createPane('me').style.zIndex = 440;
   const cellRenderer = L.canvas({ padding: 0.3 });
   const liveRenderer = L.svg({ pane: 'live' });
   const stationRenderer = L.svg({ pane: 'stations' });
   const cellLayer = L.layerGroup().addTo(map);
   const stationLayer = L.layerGroup().addTo(map);
   const liveLayer = L.layerGroup().addTo(map);
+  const meRenderer = L.svg({ pane: 'me' });
 
   // ── data ──────────────────────────────────────────────────────────────────
   let CFG = null, STATIONS = [], MOBILES = [], COVERAGE = null;
@@ -366,6 +368,58 @@
     } catch { setLive('bad', 'server unreachable'); }
   }
 
+  // ── my location (browser geolocation; never sent to the server) ──────────
+  let meWatch = null, meDot = null, meAcc = null;
+  function setMeStatus(text) { $('me-status').textContent = text || ''; $('me-status').hidden = !text; }
+  function centerOnMe() {
+    if (!meDot) return;
+    map.panTo(meDot.getLatLng(), { animate: true });
+  }
+  function onMePosition(pos) {
+    const ll = [pos.coords.latitude, pos.coords.longitude], acc = pos.coords.accuracy || 0;
+    if (!meDot) {
+      meAcc = L.circle(ll, { renderer: meRenderer, radius: acc, color: '#1a73e8', weight: 1, opacity: 0.4, fillOpacity: 0.1, interactive: false }).addTo(map);
+      meDot = L.circleMarker(ll, { renderer: meRenderer, radius: 6, color: '#ffffff', weight: 2, fillColor: '#1a73e8', fillOpacity: 1 })
+        .bindTooltip('You are here').addTo(map);
+      if (!S.follow) map.panTo(ll);  // show it once when first turned on
+    } else {
+      meDot.setLatLng(ll); meAcc.setLatLng(ll).setRadius(acc);
+    }
+    meDot.setTooltipContent(`You are here (±${Math.round(acc)} m)`);
+    setMeStatus('');
+    if (S.follow) centerOnMe();
+  }
+  function onMeError(err) {
+    const msg = { 1: 'Location permission denied. Allow it in your browser settings.',
+                  2: 'Location unavailable.', 3: 'Waiting for a location fix…' }[err.code] || err.message;
+    setMeStatus(msg);
+    if (err.code === 1) { S.me = false; save(); syncMe(); }
+  }
+  function syncMe() {
+    $('show-me').checked = S.me;
+    $('follow-me').disabled = !S.me;
+    if (S.me && meWatch === null) {
+      if (!('geolocation' in navigator) || !window.isSecureContext) {
+        setMeStatus('Location needs a browser with geolocation over HTTPS.');
+        S.me = false; save(); $('show-me').checked = false; $('follow-me').disabled = true;
+        return;
+      }
+      setMeStatus('Finding your location…');
+      meWatch = navigator.geolocation.watchPosition(onMePosition, onMeError,
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+    } else if (!S.me && meWatch !== null) {
+      navigator.geolocation.clearWatch(meWatch);
+      meWatch = null;
+      if (meDot) { map.removeLayer(meDot); map.removeLayer(meAcc); meDot = meAcc = null; }
+      if ($('me-status').textContent === 'Finding your location…') setMeStatus('');
+    }
+    if (S.me && S.follow) centerOnMe();
+  }
+  // Dragging the map yourself stops following, like most map apps.
+  map.on('dragstart', () => {
+    if (S.follow) { S.follow = false; save(); $('follow-me').checked = false; }
+  });
+
   // ── controls wiring ───────────────────────────────────────────────────────
   function bind(id, key, { parse = v => v, prop = 'value', after = refresh } = {}) {
     const el = $(id);
@@ -396,6 +450,9 @@
     bind('borders', 'borders', { prop: 'checked', after: renderCells });
     bind('show-stations', 'stations', { prop: 'checked', after: renderStations });
     bind('show-live', 'live', { prop: 'checked', after: () => { if (!S.live) liveLayer.clearLayers(); } });
+    bind('show-me', 'me', { prop: 'checked', after: syncMe });
+    bind('follow-me', 'follow', { prop: 'checked', after: syncMe });
+    syncMe();
     bind('basemap', 'basemap', { after: () => setBasemap(S.basemap) });
     bind('match', 'match');
 
