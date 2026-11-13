@@ -92,6 +92,9 @@ h2 { font-size: 13px; margin: 14px 0 6px; text-transform: uppercase; letter-spac
 .field output { float: right; font-weight: 400; color: var(--muted); }
 .check { display: flex; gap: 8px; align-items: center; margin: 8px 0; cursor: pointer; }
 .check input { accent-color: var(--accent); }
+.check.sub { margin-left: 24px; }
+.check.sub:has(input:disabled) { color: var(--muted); cursor: default; }
+.hint { font-size: 12px; margin: 2px 0 8px 24px; }
 .custom-range { border-left: 3px solid var(--border); padding-left: 10px; }
 .btn {
   padding: 6px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent);
