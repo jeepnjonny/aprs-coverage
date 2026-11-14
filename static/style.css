@@ -96,6 +96,7 @@ h2 { font-size: 13px; margin: 14px 0 6px; text-transform: uppercase; letter-spac
 .check.sub:has(input:disabled) { color: var(--muted); cursor: default; }
 .hint { font-size: 12px; margin: 2px 0 8px 24px; }
 .custom-range { border-left: 3px solid var(--border); padding-left: 10px; }
+.custom-range input:disabled { opacity: .55; }
 .btn {
   padding: 6px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent);
   color: #fff; font: inherit; cursor: pointer;

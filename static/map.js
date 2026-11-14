@@ -11,7 +11,7 @@
 
   // ── persisted UI state (per-viewer convenience only) ──────────────────────
   const DEFAULTS = {
-    preset: '604800', from: null, to: null, color: 'single', singleColor: '#2f81f7',
+    preset: '604800', from: null, to: null, toNow: false, color: 'single', singleColor: '#2f81f7',
     shade: true, cell: 1000, opacity: 60, borders: true, stations: true, live: true, me: false, follow: false,
     basemap: 'osm', match: 'first', mobiles: null, heard: null,   // null = all selected
   };
@@ -73,12 +73,13 @@
     if (S.preset === 'all') return { start: 0, end: now };
     if (S.preset === 'custom') {
       const f = S.from ? Math.floor(new Date(S.from).getTime() / 1000) : now - 86400;
-      const t = S.to ? Math.floor(new Date(S.to).getTime() / 1000) : now;
+      const t = S.toNow || !S.to ? now : Math.floor(new Date(S.to).getTime() / 1000);
       return { start: f, end: t };
     }
     return { start: now - parseInt(S.preset, 10), end: now };
   }
-  const isRelative = () => S.preset !== 'custom';
+  // "Relative" = the window ends now, so it moves and live packets belong in it.
+  const isRelative = () => S.preset !== 'custom' || S.toNow;
 
   function queryParams(withHeard = true) {
     const { start, end } = timeRange();
@@ -152,7 +153,7 @@
     if (S.preset === 'custom') {
       const { start, end } = timeRange();
       const d = t => new Date(t * 1000).toLocaleDateString();
-      return `${d(start)} – ${d(end)}`;
+      return `${d(start)} – ${S.toNow ? 'now' : d(end)}`;
     }
     const sel = $('preset');
     return sel.options[sel.selectedIndex]?.text || '';
@@ -470,6 +471,7 @@
     cellSel.innerHTML = CFG.cell_sizes.map(m => `<option value="${m}">${m >= 1000 ? m / 1000 + ' km' : m + ' m'}</option>`).join('');
     if (!CFG.cell_sizes.includes(+S.cell)) S.cell = 1000;
 
+    if (![...$('preset').options].some(o => o.value === S.preset)) S.preset = DEFAULTS.preset;  // e.g. a removed preset
     bind('preset', 'preset', { after: () => { syncVisibility(); if (S.preset !== 'custom') refresh(); } });
     bind('color-mode', 'color', { after: () => { syncVisibility(); buildFilters(); refresh(); } });
     bind('single-color', 'singleColor', { after: renderCells });
@@ -489,7 +491,12 @@
     const now = Math.floor(Date.now() / 1000);
     $('from').value = S.from || toLocal(now - 86400);
     $('to').value = S.to || toLocal(now);
-    $('apply-range').addEventListener('click', () => { S.from = $('from').value; S.to = $('to').value; save(); refresh(); });
+    $('to-now').checked = S.toNow;
+    $('to').disabled = S.toNow;
+    $('to-now').addEventListener('change', () => { $('to').disabled = $('to-now').checked; });
+    $('apply-range').addEventListener('click', () => {
+      S.from = $('from').value; S.to = $('to').value; S.toNow = $('to-now').checked; save(); refresh();
+    });
 
     document.querySelectorAll('[data-all],[data-none]').forEach(b => b.addEventListener('click', () => {
       const which = b.dataset.all || b.dataset.none;
@@ -533,6 +540,12 @@
     renderStations();  // popups use stats
     startLive();
     setInterval(checkStatus, 60000);
+    // Short windows that end now (15 minutes, 24 hours) also need old packets to
+    // drop off when nothing new arrives, so redraw them every minute.
+    setInterval(() => {
+      const { start, end } = timeRange();
+      if (isRelative() && end - start <= 86400 && !document.hidden) refresh();
+    }, 60000);
     setInterval(async () => {  // pick up station edits and marker positions
       try { STATIONS = await getJSON('api/stations'); renderStations(); } catch {}
     }, 300000);

@@ -32,11 +32,11 @@
     <section class="tab-body" id="tab-layers">
       <label class="field">Time range
         <select id="preset">
+          <option value="900">Last 15 minutes</option>
           <option value="86400">Last 24 hours</option>
           <option value="604800" selected>Last 7 days</option>
           <option value="2592000">Last 30 days</option>
-          <option value="7776000">Last 90 days</option>
-          <option value="31536000">Last year</option>
+          <option value="31536000">Last 12 months</option>
           <option value="all">All time</option>
           <option value="custom">Custom…</option>
         </select>
@@ -44,6 +44,7 @@
       <div id="custom-range" class="custom-range" hidden>
         <label class="field">From <input type="datetime-local" id="from"></label>
         <label class="field">To <input type="datetime-local" id="to"></label>
+        <label class="check"><input type="checkbox" id="to-now"> Now (keeps updating)</label>
         <button id="apply-range" class="btn">Apply</button>
       </div>
 

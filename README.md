@@ -39,7 +39,7 @@ where the local igates and digipeaters can actually hear a mobile.
   - Color squares by igate/digi, by reporting mobile, or one color for overall coverage
   - Shade squares by packet count as a rough measure of signal strength
   - Filter by mobile and by igate/digi
-  - Time presets (24 hours to all time) or a custom range
+  - Time presets (15 minutes to 12 months, or all time) or a custom range whose end can be "now"
   - Live updates: new packets appear and flash as they arrive
   - "Show my location" puts a dot at your phone or computer's own position (browser
     geolocation, never sent to the server), with an option to keep the map centered on it
