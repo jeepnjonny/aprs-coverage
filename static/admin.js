@@ -5,6 +5,16 @@
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const fmt = ts => ts ? new Date(ts * 1000).toLocaleString() : '—';
   const KIND = { mobile: 'Mobile', igate: 'Igate', digi: 'Digi', digi_igate: 'Digi + igate' };
+  // Hardware choices come from the server (api/config); keys are what gets stored.
+  let HARDWARE = {};
+  const hwName = k => k ? (HARDWARE[k] || k) : '';
+  const hwCell = s => `<td>${s.hardware ? esc(hwName(s.hardware)) : '<span class="muted">—</span>'}</td>`;
+  function fillHardware(sel) {
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Not set</option>'
+      + Object.entries(HARDWARE).map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join('');
+    sel.value = cur;
+  }
 
   async function api(method, url, body) {
     const r = await fetch(url, {
@@ -106,7 +116,9 @@
   function deviceBlock(d, removable) {
     const fs = $('device-tpl').content.firstElementChild.cloneNode(true);
     const f = k => fs.querySelector(`[data-f="${k}"]`);
+    fillHardware(f('hardware'));
     if (d) {
+      f('hardware').value = d.hardware || '';
       f('callsign').value = d.callsign; f('kind').value = d.kind; f('label').value = d.label; f('notes').value = d.notes;
       f('usecolor').checked = !!d.color; f('color').value = d.color || '#2f81f7';
       f('lat').value = d.lat ?? ''; f('lon').value = d.lon ?? ''; f('active').checked = !!d.active;
@@ -131,6 +143,7 @@
     return {
       callsign: f('callsign').value.trim(), kind: f('kind').value,
       label: f('label').value.trim(), notes: f('notes').value.trim(),
+      hardware: f('hardware').value,
       color: f('usecolor').checked ? f('color').value : null,
       lat: mobile ? null : num(f('lat').value), lon: mobile ? null : num(f('lon').value),
       active: f('active').checked,
@@ -271,12 +284,12 @@
       const pos = lat != null
         ? `${lat.toFixed(5)}, ${lon.toFixed(5)} <span class="muted">${s.lat != null ? 'manual' : 'auto'}</span>`
         : '<span class="muted">waiting for beacon</span>';
-      return `<tr>${callCell(s)}<td>${KIND[s.kind]}</td>${labelCell(s)}
+      return `<tr>${callCell(s)}<td>${KIND[s.kind]}</td>${hwCell(s)}${labelCell(s)}
         <td>${pos}</td><td>${fmt(s.last_beacon)}</td><td>${serverCell(s)}</td><td>${gatedCell(s.gated)}</td><td>${s.active ? 'yes' : 'no'}</td>${actions(s)}</tr>`;
-    }).join('') || '<tr><td colspan="9" class="muted">No igates or digis yet. Add them above.</td></tr>';
+    }).join('') || '<tr><td colspan="10" class="muted">No igates or digis yet. Add them above.</td></tr>';
     $('stations-mobile').innerHTML = mobiles.map(s =>
-      `<tr>${callCell(s)}${labelCell(s)}<td>${s.active ? 'yes' : 'no'}</td>${actions(s)}</tr>`
-    ).join('') || '<tr><td colspan="4" class="muted">No mobiles yet. Add them above.</td></tr>';
+      `<tr>${callCell(s)}${hwCell(s)}${labelCell(s)}<td>${s.active ? 'yes' : 'no'}</td>${actions(s)}</tr>`
+    ).join('') || '<tr><td colspan="5" class="muted">No mobiles yet. Add them above.</td></tr>';
     document.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => editStation(+b.dataset.edit)));
     document.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => deleteStation(+b.dataset.del, b)));
     document.querySelectorAll('[data-purge]').forEach(b => b.addEventListener('click', () => purgeStation(+b.dataset.purge, b)));
@@ -333,6 +346,7 @@
     $('s-callsign').value = s.callsign;
     $('s-kind').value = s.kind;
     $('s-label').value = s.label;
+    $('s-hardware').value = s.hardware || '';
     $('s-notes').value = s.notes;
     $('s-usecolor').checked = !!s.color;
     $('s-color').value = s.color || '#2f81f7';
@@ -374,6 +388,7 @@
       callsign: $('s-callsign').value.trim(),
       kind: $('s-kind').value,
       label: $('s-label').value.trim(),
+      hardware: $('s-hardware').value,
       notes: $('s-notes').value.trim(),
       color: $('s-usecolor').checked ? $('s-color').value : null,
       lat: mobile ? null : num($('s-lat').value),
@@ -403,7 +418,7 @@
   // ── approvals (admin) ─────────────────────────────────────────────────────
   const POS = s => s.lat != null ? `${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}` : (s.kind === 'mobile' ? '' : 'position from beacon');
   function deviceSummary(s) {
-    const bits = [KIND[s.kind], s.label, POS(s), s.active ? '' : 'inactive'].filter(Boolean).map(esc).join(' · ');
+    const bits = [KIND[s.kind], hwName(s.hardware), s.label, POS(s), s.active ? '' : 'inactive'].filter(Boolean).map(esc).join(' · ');
     return `${s.color ? `<span class="swatch" style="background:${esc(s.color)}"></span> ` : ''}<b>${esc(s.callsign)}</b> <span class="muted">${bits}</span>`
       + (s.notes ? `<br><span class="muted small">${esc(s.notes)}</span>` : '')
       + (s.status === 'rejected' && s.review_note ? `<br><span class="error small">Rejected: ${esc(s.review_note)}</span>` : '');
@@ -553,12 +568,12 @@
     mine = d.devices;
     $('my-devices').innerHTML = mine.map(s => `<tr>
         <td>${s.color ? `<span class="swatch" style="background:${esc(s.color)}"></span> ` : ''}<b>${esc(s.callsign)}</b></td>
-        <td>${KIND[s.kind]}</td>
+        <td>${KIND[s.kind]}</td>${hwCell(s)}
         <td>${esc(s.label)}${s.notes ? `<br><span class="muted small">${esc(s.notes)}</span>` : ''}</td>
         <td>${myStatus(s)}</td>
         <td>${s.kind === 'mobile' || s.status !== 'approved' ? '<span class="muted">—</span>' : `${fmt(s.last_beacon)}${s.gated ?`<br><span class="muted small">gated ${s.gated.main + s.gated.dupe} in 7 days</span>` : ''}`}</td>
         <td class="actions"><button class="btn secondary" data-myedit="${s.id}">Edit</button><button class="btn danger" data-mydel="${s.id}">Delete</button></td>
-      </tr>`).join('') || '<tr><td colspan="6" class="muted">No devices yet. Add one below.</td></tr>';
+      </tr>`).join('') || '<tr><td colspan="7" class="muted">No devices yet. Add one below.</td></tr>';
     document.querySelectorAll('[data-myedit]').forEach(b => b.addEventListener('click', () => editMine(+b.dataset.myedit)));
     document.querySelectorAll('[data-mydel]').forEach(b => b.addEventListener('click', async () => {
       if (!armed(b)) return;
@@ -1098,6 +1113,12 @@
   });
 
   kindChanged();
-  fetch('api/me').then(r => r.json()).then(d => d.user ? showApp(d.user) : showLoggedOut()).catch(showLoggedOut);
+  // Hardware options first, so device forms built on login have them.
+  fetch('api/config').then(r => r.json()).then(c => { HARDWARE = c.hardware || {}; })
+    .catch(() => {})
+    .finally(() => {
+      document.querySelectorAll('select[data-hw]').forEach(fillHardware);
+      fetch('api/me').then(r => r.json()).then(d => d.user ? showApp(d.user) : showLoggedOut()).catch(showLoggedOut);
+    });
   setInterval(() => { if (!$('app').hidden && isAdmin()) loadStatus().catch(() => {}); }, 15000);
 })();

@@ -148,6 +148,7 @@ def _cell_size(cell: int) -> int:
 @app.get("/api/config")
 def api_config():
     return {
+        "hardware": HARDWARE,
         "cell_sizes": config.CELL_SIZES_M,
         "grid_ref_lat": config.GRID_REF_LAT,
         "default_bounds": [[43.50, -116.68], [43.92, -116.12]],  # Nampa/Meridian/Boise/Emmett
@@ -172,7 +173,7 @@ def api_stations():
             last = max(filter(None, [heard.get(call), gated.get(call)]), default=None)
         out.append({
             "callsign": call, "kind": r["kind"], "label": r["label"], "color": r["color"],
-            "lat": lat, "lon": lon, "last_beacon": r["last_beacon"], "last_heard": last,
+            "hardware": r["hardware"], "lat": lat, "lon": lon, "last_beacon": r["last_beacon"], "last_heard": last,
         })
     return out
 
@@ -330,6 +331,21 @@ MOBILE_RE = re.compile(r"^[A-Z0-9]{1,6}(-[A-Z0-9]{1,2}|-\*|\*)?$")
 # are up to 9 characters; spaces are not allowed here (trailing pad is stripped).
 OBJECT_RE = re.compile(r"^[A-Z0-9]{1,6}(-[A-Z0-9]{1,2}|-\*|\*)?:[A-Z0-9_./#*-]{1,9}$")
 COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+# Device hardware, for the dropdown and the map's filter: the boards the LoRa
+# FieldOps firmware builds for (KJ7NYE/LoRa_FieldOps_APRS_Tracker), then "other".
+# Keys are stored, so keep them stable; labels can change freely.
+HARDWARE = {
+    "heltec_t114": "Heltec T114",
+    "heltec_v3": "Heltec WiFi LoRa 32 V3",
+    "heltec_tracker": "Heltec Wireless Tracker",
+    "tbeam": "LilyGo T-Beam",
+    "tbeam_1w": "LilyGo T-Beam 1W",
+    "lilygo_t3": "LilyGo T3",
+    "lilygo_t3s3": "LilyGo T3-S3",
+    "loranger_v1": "LoRanger V1",
+    "loranger_v2": "LoRanger V2",
+    "other": "Other",
+}
 
 
 class StationIn(BaseModel):
@@ -338,6 +354,7 @@ class StationIn(BaseModel):
     label: str = ""
     notes: str = ""
     color: str | None = None
+    hardware: str = ""
     lat: float | None = None
     lon: float | None = None
     active: bool = True
@@ -363,6 +380,14 @@ class StationIn(BaseModel):
         if not COLOR_RE.match(v):
             raise ValueError("color must be #rrggbb")
         return v.lower()
+
+    @field_validator("hardware")
+    @classmethod
+    def _hardware(cls, v):
+        v = (v or "").strip()
+        if v and v not in HARDWARE:
+            raise ValueError("unknown hardware type")
+        return v
 
     def check(self):
         if self.kind not in ("mobile", "igate", "digi", "digi_igate"):
@@ -390,9 +415,9 @@ class AdminStationIn(StationIn):
 def _insert_station(c, body: StationIn, *, owner_id: int | None, status: str) -> int:
     try:
         cur = c.execute(
-            "INSERT INTO stations(callsign,kind,label,notes,color,lat,lon,active,owner_id,status) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (body.callsign, body.kind, body.label, body.notes, body.color, body.lat, body.lon,
+            "INSERT INTO stations(callsign,kind,label,notes,color,hardware,lat,lon,active,owner_id,status) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (body.callsign, body.kind, body.label, body.notes, body.color, body.hardware, body.lat, body.lon,
              int(body.active), owner_id, status),
         )
     except sqlite3.IntegrityError as e:
@@ -643,7 +668,8 @@ def add_device(body: StationIn, user: dict = Depends(auth.require_user)):
 
 @app.put("/api/account/devices/{sid}")
 def edit_device(sid: int, body: StationIn, user: dict = Depends(auth.require_user)):
-    """An approved device keeps its callsign and type; everything else can
+    """An approved device keeps its callsign and type; everything else
+    (hardware included, since boards get swapped) can
     change. A pending or rejected one can change entirely, and goes (back)
     into the approval queue."""
     body.check()
@@ -654,14 +680,14 @@ def edit_device(sid: int, body: StationIn, user: dict = Depends(auth.require_use
             if (body.callsign, body.kind) != (st["callsign"], st["kind"]):
                 raise HTTPException(422, "The callsign and type can't change after approval. "
                                          "Add a new device instead, then delete this one.")
-            c.execute("UPDATE stations SET label=?,notes=?,color=?,lat=?,lon=?,active=? WHERE id=?",
-                      (body.label, body.notes, body.color, body.lat, body.lon, int(body.active), sid))
+            c.execute("UPDATE stations SET label=?,notes=?,color=?,hardware=?,lat=?,lon=?,active=? WHERE id=?",
+                      (body.label, body.notes, body.color, body.hardware, body.lat, body.lon, int(body.active), sid))
         else:
             try:
                 c.execute(
-                    "UPDATE stations SET callsign=?,kind=?,label=?,notes=?,color=?,lat=?,lon=?,active=?,"
+                    "UPDATE stations SET callsign=?,kind=?,label=?,notes=?,color=?,hardware=?,lat=?,lon=?,active=?,"
                     "status='pending',review_note='' WHERE id=?",
-                    (body.callsign, body.kind, body.label, body.notes, body.color, body.lat, body.lon,
+                    (body.callsign, body.kind, body.label, body.notes, body.color, body.hardware, body.lat, body.lon,
                      int(body.active), sid))
             except sqlite3.IntegrityError:
                 raise HTTPException(409, f"{body.callsign} is already registered")
@@ -701,8 +727,9 @@ def admin_create_station(body: AdminStationIn):
 @app.put("/api/admin/stations/{sid}", dependencies=[Depends(auth.require_admin)])
 def admin_update_station(sid: int, body: AdminStationIn):
     body.check()
-    sets = "callsign=?,kind=?,label=?,notes=?,color=?,lat=?,lon=?,active=?"
-    args = [body.callsign, body.kind, body.label, body.notes, body.color, body.lat, body.lon, int(body.active)]
+    sets = "callsign=?,kind=?,label=?,notes=?,color=?,hardware=?,lat=?,lon=?,active=?"
+    args = [body.callsign, body.kind, body.label, body.notes, body.color, body.hardware,
+            body.lat, body.lon, int(body.active)]
     with db.session() as c:
         if "owner_id" in body.model_fields_set:
             _check_owner(c, body.owner_id)

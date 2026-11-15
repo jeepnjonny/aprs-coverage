@@ -87,6 +87,20 @@
 
     <section class="tab-body" id="tab-filters" hidden>
       <div class="filter-group">
+        <div class="filter-head"><h2>Hardware</h2>
+          <span><button class="link" data-all="hw">All</button> · <button class="link" data-none="hw">None</button></span></div>
+        <label class="field">Apply to
+          <select id="hw-scope">
+            <option value="both">Mobiles and igates / digis</option>
+            <option value="mobiles">Mobiles only</option>
+            <option value="infra">Igates / digis only</option>
+          </select>
+        </label>
+        <div id="hw-list" class="check-list"></div>
+        <p class="muted small">Unticked hardware also drops its stations from the lists below.
+          Unregistered and untraced hops count as <em>Not set</em>.</p>
+      </div>
+      <div class="filter-group">
         <div class="filter-head"><h2>Mobile stations</h2>
           <span><button class="link" data-all="mobiles">All</button> · <button class="link" data-none="mobiles">None</button></span></div>
         <div id="mobiles-list" class="check-list"><p class="muted">No packets yet.</p></div>

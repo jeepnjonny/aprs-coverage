@@ -132,6 +132,7 @@
               <option value="digi_igate">Digi + igate</option>
             </select>
           </label>
+          <label class="field">Hardware <select id="s-hardware" data-hw></select></label>
           <label class="field">Label <input type="text" id="s-label" placeholder="e.g. Shafer Butte"></label>
           <label class="field inline">Map color <input type="color" id="s-color" value="#2f81f7"></label>
           <label class="field infra-only">Latitude <input type="number" step="any" id="s-lat" placeholder="auto from beacon"></label>
@@ -151,7 +152,7 @@
     <section class="card">
       <h2>Igates and digipeaters</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>Callsign</th><th>Type</th><th>Label</th><th>Position</th><th>Own beacon</th><th>APRS-IS server</th><th>Gated to (7 days)</th><th>Active</th><th></th></tr></thead>
+        <thead><tr><th>Callsign</th><th>Type</th><th>Hardware</th><th>Label</th><th>Position</th><th>Own beacon</th><th>APRS-IS server</th><th>Gated to (7 days)</th><th>Active</th><th></th></tr></thead>
         <tbody id="stations-infra"></tbody>
       </table></div>
       <p class="muted small"><b>APRS-IS server</b>: the server named after <code>qAC</code> on the last beacon, status or
@@ -165,7 +166,7 @@
     <section class="card">
       <h2>Mobiles</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>Callsign</th><th>Label</th><th>Active</th><th></th></tr></thead>
+        <thead><tr><th>Callsign</th><th>Hardware</th><th>Label</th><th>Active</th><th></th></tr></thead>
         <tbody id="stations-mobile"></tbody>
       </table></div>
     </section>
@@ -232,7 +233,7 @@
     <section class="card">
       <h2>My devices</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>Callsign</th><th>Type</th><th>Label</th><th>Status</th><th>Last heard</th><th></th></tr></thead>
+        <thead><tr><th>Callsign</th><th>Type</th><th>Hardware</th><th>Label</th><th>Status</th><th>Last heard</th><th></th></tr></thead>
         <tbody id="my-devices"></tbody>
       </table></div>
       <p class="muted small">Once a device is approved, its callsign and type are fixed. To change them, add a new
@@ -393,6 +394,7 @@
           <option value="mobile">Mobile / tracker</option>
         </select>
       </label>
+      <label class="field">Hardware <select data-f="hardware" data-hw></select></label>
       <label class="field">Label <input type="text" data-f="label" maxlength="200" placeholder="e.g. Shafer Butte"></label>
       <label class="field inline">Map color <input type="color" data-f="color" value="#2f81f7"></label>
       <label class="field infra-only">Latitude <input type="number" step="any" min="-90" max="90" data-f="lat"

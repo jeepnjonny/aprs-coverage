@@ -263,3 +263,38 @@ def test_old_admin_password_migrates(tmp_path, monkeypatch):
         assert c.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
         st = c.execute("SELECT status, owner_id FROM stations").fetchone()
     assert st["status"] == "approved" and st["owner_id"] is None
+
+
+def test_device_hardware(client):
+    """Hardware is optional, checked against the list in api/config, shown on the
+    public map, and (unlike callsign and type) editable after approval."""
+    assert "heltec_t114" in client.get("/api/config").json()["hardware"]
+    alice = other(client)
+    assert signup(alice, devices=[{"callsign": "K7ALC-10", "kind": "igate", "hardware": "nope"}]).status_code == 422
+    assert signup(alice, devices=[{"callsign": "K7ALC-10", "kind": "igate", "hardware": "loranger_v2"}]).status_code == 200
+    login(client)
+    approve(client, "alice", "K7ALC-10")
+    pub = {s["callsign"]: s for s in client.get("/api/stations").json()}
+    assert pub["K7ALC-10"]["hardware"] == "loranger_v2"
+
+    sid = alice.get("/api/account").json()["devices"][0]["id"]
+    r = alice.put(f"/api/account/devices/{sid}", json={"callsign": "K7ALC-10", "kind": "igate", "hardware": "heltec_v3"}, headers=H)
+    assert r.status_code == 200
+    assert alice.get("/api/account").json()["devices"][0]["hardware"] == "heltec_v3"
+
+    # Admins set it too; leaving it out clears it.
+    assert client.put(f"/api/admin/stations/{sid}", json={"callsign": "K7ALC-10", "kind": "igate"}, headers=H).status_code == 200
+    assert device_id(client, "K7ALC-10") == sid
+    assert next(s for s in client.get("/api/admin/stations").json() if s["id"] == sid)["hardware"] == ""
+
+
+def test_hardware_column_added_to_old_db(tmp_path, monkeypatch):
+    from app import config, db
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "old.db")
+    conn = sqlite3.connect(tmp_path / "old.db")
+    conn.executescript(db.SCHEMA.replace("    hardware    TEXT NOT NULL DEFAULT '',      -- board key from main.HARDWARE; '' = not set\n", ""))
+    conn.execute("INSERT INTO stations(callsign, kind) VALUES('K7OLD-10', 'igate')")
+    conn.commit(); conn.close()
+    db.init()
+    with db.session() as c:
+        assert c.execute("SELECT hardware FROM stations").fetchone()[0] == ""

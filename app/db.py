@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS stations (
     label       TEXT NOT NULL DEFAULT '',
     notes       TEXT NOT NULL DEFAULT '',
     color       TEXT,                          -- optional #rrggbb for map colouring
+    hardware    TEXT NOT NULL DEFAULT '',      -- board key from main.HARDWARE; '' = not set
     lat         REAL,                          -- manual position (igate/digi)
     lon         REAL,
     auto_lat    REAL,                          -- last position beaconed by the station itself
@@ -142,6 +143,8 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE stations ADD COLUMN status TEXT NOT NULL DEFAULT 'approved' "
                   "CHECK (status IN ('pending','approved','rejected'))")
         c.execute("ALTER TABLE stations ADD COLUMN review_note TEXT NOT NULL DEFAULT ''")
+    if "hardware" not in scols:
+        c.execute("ALTER TABLE stations ADD COLUMN hardware TEXT NOT NULL DEFAULT ''")
     c.execute("CREATE INDEX IF NOT EXISTS ix_stations_owner ON stations(owner_id)")
     # Sessions belong to a user now. Older ones (from the single shared admin
     # password) have none and are dropped: everyone logs in again.

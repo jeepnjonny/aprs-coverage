@@ -38,7 +38,8 @@ where the local igates and digipeaters can actually hear a mobile.
   - Square size from 100 m to 2 km, adjustable overlay opacity
   - Color squares by igate/digi, by reporting mobile, or one color for overall coverage
   - Shade squares by packet count as a rough measure of signal strength
-  - Filter by mobile and by igate/digi
+  - Filter by mobile, by igate/digi, and by device hardware (Heltec T114, LoRanger V2, …), applied to
+    mobiles, igates/digis or both
   - Time presets (15 minutes to 12 months, or all time) or a custom range whose end can be "now"
   - Live updates: new packets appear and flash as they arrive
   - "Show my location" puts a dot at your phone or computer's own position (browser
@@ -48,7 +49,9 @@ where the local igates and digipeaters can actually hear a mobile.
   an igate, digi or tracker can sign up with their callsign and the devices they run. The account
   and its devices stay pending, off the map and out of the APRS-IS filter, until an admin approves
   them. An approved node owner manages only their own devices (label, color, position, active,
-  delete, add more for approval); a device's callsign and type are fixed once approved. Two roles:
+  delete, add more for approval); a device's callsign and type are fixed once approved. Each device can
+  record its hardware, picked from the boards the LoRa FieldOps firmware supports (or *Other*), and that
+  can change at any time. Two roles:
   **admin** and **node owner**.
 - **Admin pages.** Approve or reject sign-ups and new devices (with a reason the owner sees), manage
   users (role, disable, password reset, remote-config access), register stations directly and

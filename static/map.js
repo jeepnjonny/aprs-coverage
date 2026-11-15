@@ -14,6 +14,7 @@
     preset: '604800', from: null, to: null, toNow: false, color: 'single', singleColor: '#2f81f7',
     shade: true, cell: 1000, opacity: 60, borders: true, stations: true, live: true, me: false, follow: false,
     basemap: 'osm', match: 'first', mobiles: null, heard: null,   // null = all selected
+    hw: null, hwScope: 'both',                                    // hardware filter; null = all
   };
   let S = { ...DEFAULTS };
   try { Object.assign(S, JSON.parse(localStorage.getItem('acov-ui') || '{}')); } catch {}
@@ -84,9 +85,10 @@
   function queryParams(withHeard = true) {
     const { start, end } = timeRange();
     const p = new URLSearchParams({ start, end, cell: S.cell });
-    if (S.mobiles !== null) p.set('mobiles', S.mobiles.join(','));
+    const mobiles = effMobiles(), heard = effHeard();
+    if (mobiles !== null) p.set('mobiles', mobiles.join(','));
     if (withHeard) {
-      if (S.heard !== null) p.set('heard_by', S.heard.join(','));
+      if (heard !== null) p.set('heard_by', heard.join(','));
       p.set('match', S.match);
       p.set('color', S.color);
     }
@@ -166,6 +168,25 @@
     pattern.includes(':') === call.includes(':') && globRe(pattern).test(call);
   const findStation = call => STATIONS.find(s => s.callsign === call)
     || STATIONS.find(s => /[*?]/.test(s.callsign) && patternMatches(s.callsign, call));
+  // ── hardware filter ───────────────────────────────────────────────────────
+  // Narrows the mobile and igate/digi selections to stations whose hardware is
+  // ticked. '' = not set (also unregistered stations and untraced hops).
+  const NOT_SET = '';
+  const hwOf = call => { const st = findStation(call); return st ? st.hardware || NOT_SET : NOT_SET; };
+  const hwName = k => k ? ((CFG && CFG.hardware && CFG.hardware[k]) || k) : 'Not set';
+  const hwOn = scope => S.hw !== null && (S.hwScope === 'both' || S.hwScope === scope);
+  const hwPass = call => S.hw.includes(hwOf(call));
+  const allHeard = () => [...infraCalls(), OTHER, UNTRACED];
+  // What actually goes to the server: null = no filter at all.
+  function effMobiles() {
+    if (!hwOn('mobiles')) return S.mobiles;
+    return (S.mobiles ?? MOBILES).filter(hwPass);
+  }
+  function effHeard() {
+    if (!hwOn('infra')) return S.heard;
+    return (S.heard ?? allHeard()).filter(k => k.startsWith('__') ? S.hw.includes(NOT_SET) : hwPass(k));
+  }
+
   // The station's label if it has one, otherwise just the callsign. Use this
   // wherever a station is shown; the callsign goes in a hover title instead.
   const stationName = call => {
@@ -258,7 +279,7 @@
     const row = (k, v) => `<tr><th>${k}</th><td>${v}</td></tr>`;
     let html = `<div class="station-card">
       <div class="sc-head"><span class="swatch" style="background:${color}"></span>
-        <b>${esc(s.label || s.callsign)}</b> <span class="muted">${KIND_NAME[s.kind] || ''}</span></div>`;
+        <b>${esc(s.label || s.callsign)}</b> <span class="muted">${KIND_NAME[s.kind] || ''}${s.hardware ? ' · ' + esc(hwName(s.hardware)) : ''}</span></div>`;
     if (s.label) html += `<div class="sc-label">${esc(s.callsign)}</div>`;
     html += `<div class="sc-range muted">${esc(rangeText())}</div><table>`;
     if (!st) {
@@ -320,17 +341,36 @@
     return sel.length === boxes.length ? null : sel;
   }
 
+  // Reads a list the hardware filter may have narrowed: stations it hides keep
+  // whatever selection they had, so changing the hardware back restores them.
+  function readNarrowed(el, prev, universe) {
+    const shown = new Set([...el.querySelectorAll('input[type=checkbox]')].map(b => b.value));
+    const sel = new Set(readCheckList(el) ?? shown);
+    for (const k of universe) if (!shown.has(k) && (prev === null || prev.includes(k))) sel.add(k);
+    return universe.every(k => sel.has(k)) ? null : universe.filter(k => sel.has(k));
+  }
+
   function buildFilters() {
-    buildCheckList($('mobiles-list'), MOBILES.map(m => ({ value: m, label: stationName(m), title: m, color: S.color === 'mobile' ? keyColor(m) : null }))
+    // Hardware actually in use, in the server's order, then "Not set".
+    const used = new Set(STATIONS.map(s => s.hardware || NOT_SET));
+    const hwItems = [...Object.keys((CFG && CFG.hardware) || {}).filter(k => used.has(k)), NOT_SET]
+      .map(k => ({ value: k, label: hwName(k), meta: String(STATIONS.filter(s => (s.hardware || NOT_SET) === k).length) }));
+    buildCheckList($('hw-list'), hwItems, S.hw, () => { S.hw = readCheckList($('hw-list')); save(); buildFilters(); refresh(); });
+    const hide = (scope, call) => hwOn(scope) && !hwPass(call);
+    buildCheckList($('mobiles-list'), MOBILES.filter(m => !hide('mobiles', m))
+      .map(m => ({ value: m, label: stationName(m), title: m, color: S.color === 'mobile' ? keyColor(m) : null,
+                   meta: findStation(m)?.hardware ? hwName(findStation(m).hardware) : '' }))
       .sort((a, b) => a.label.localeCompare(b.label)),
-      S.mobiles, () => { S.mobiles = readCheckList($('mobiles-list')); save(); refresh(); });
-    const infra = STATIONS.filter(s => s.kind !== 'mobile').map(s => ({
+      S.mobiles, () => { S.mobiles = readNarrowed($('mobiles-list'), S.mobiles, MOBILES); save(); refresh(); });
+    const infra = STATIONS.filter(s => s.kind !== 'mobile' && !hide('infra', s.callsign)).map(s => ({
       value: s.callsign, label: s.label || s.callsign, title: s.callsign, color: keyColor(s.callsign),
-      meta: { igate: 'igate', digi: 'digi', digi_igate: 'digi+ig' }[s.kind],
+      meta: [{ igate: 'igate', digi: 'digi', digi_igate: 'digi+ig' }[s.kind], s.hardware ? hwName(s.hardware) : ''].filter(Boolean).join(' · '),
     })).sort((a, b) => a.label.localeCompare(b.label));
-    infra.push({ value: OTHER, label: 'Other (unregistered stations)' });
-    infra.push({ value: UNTRACED, label: 'Untraced digi hop (unknown)', color: '#8b949e' });
-    buildCheckList($('heard-list'), infra, S.heard, () => { S.heard = readCheckList($('heard-list')); save(); refresh(); });
+    if (!hwOn('infra') || S.hw.includes(NOT_SET)) {
+      infra.push({ value: OTHER, label: 'Other (unregistered stations)' });
+      infra.push({ value: UNTRACED, label: 'Untraced digi hop (unknown)', color: '#8b949e' });
+    }
+    buildCheckList($('heard-list'), infra, S.heard, () => { S.heard = readNarrowed($('heard-list'), S.heard, allHeard()); save(); refresh(); });
   }
 
   let STATS = null;
@@ -486,6 +526,7 @@
     syncMe();
     bind('basemap', 'basemap', { after: () => setBasemap(S.basemap) });
     bind('match', 'match');
+    bind('hw-scope', 'hwScope', { after: () => { buildFilters(); refresh(); } });
 
     const toLocal = ts => new Date(ts * 1000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
     const now = Math.floor(Date.now() / 1000);
@@ -501,7 +542,7 @@
     document.querySelectorAll('[data-all],[data-none]').forEach(b => b.addEventListener('click', () => {
       const which = b.dataset.all || b.dataset.none;
       const val = b.dataset.all ? null : [];
-      if (which === 'mobiles') S.mobiles = val; else S.heard = val;
+      if (which === 'mobiles') S.mobiles = val; else if (which === 'hw') S.hw = val; else S.heard = val;
       save(); buildFilters(); refresh();
     }));
 
