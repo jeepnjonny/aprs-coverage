@@ -98,6 +98,52 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_id    INTEGER REFERENCES users(id) ON DELETE CASCADE,
     expires    INTEGER NOT NULL
 );
+
+-- Device log uploads (optional): keys a user makes for an app to upload with
+CREATE TABLE IF NOT EXISTS api_keys (
+    id         INTEGER PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL DEFAULT '',
+    key_hash   TEXT NOT NULL UNIQUE,           -- sha256 of the key; the key itself is shown once
+    prefix     TEXT NOT NULL,                  -- first characters, to tell keys apart
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    last_used  INTEGER
+);
+
+-- What a mobile's own log says it sent (tx) and heard (rx), uploaded by an app
+CREATE TABLE IF NOT EXISTS device_log (
+    id          INTEGER PRIMARY KEY,
+    device      TEXT NOT NULL,                 -- mobile key, as in packets.mobile (K7ABC-9 or K7SWI:CAR01)
+    kind        TEXT NOT NULL CHECK (kind IN ('tx','rx')),
+    ts          INTEGER NOT NULL,              -- unix seconds, the phone's clock when logged
+    packet      TEXT NOT NULL,                 -- TNC2 line as logged
+    info        TEXT NOT NULL,                 -- information field (after the first ':')
+    is_pos      INTEGER NOT NULL DEFAULT 0,    -- a position packet the map could use
+    lat         REAL,
+    lon         REAL,
+    echo        INTEGER NOT NULL DEFAULT 0,    -- rx: 1 = its own packet, repeated by a digi
+    via         TEXT,                          -- rx: the digi heard repeating it, or the node whose beacon it was
+    rssi        REAL,
+    snr         REAL,
+    txid        INTEGER,                       -- tx: the transmission it reached APRS-IS as; NULL = not heard
+    user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    uploaded_at INTEGER NOT NULL,
+    UNIQUE(device, kind, ts, packet)
+);
+CREATE INDEX IF NOT EXISTS ix_device_log ON device_log(device, kind, ts);
+
+-- Dated notes on a device (antenna swap, setting change), shown on comparisons
+CREATE TABLE IF NOT EXISTS device_events (
+    id         INTEGER PRIMARY KEY,
+    device     TEXT NOT NULL,                  -- callsign or mobile key
+    ts         INTEGER NOT NULL,
+    text       TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT 'web' CHECK (source IN ('web','app')),
+    user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    UNIQUE(device, ts, text)
+);
+CREATE INDEX IF NOT EXISTS ix_device_events ON device_events(device, ts);
 """
 
 

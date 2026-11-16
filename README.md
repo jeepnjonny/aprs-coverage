@@ -45,6 +45,14 @@ where the local igates and digipeaters can actually hear a mobile.
   - "Show my location" puts a dot at your phone or computer's own position (browser
     geolocation, never sent to the server), with an option to keep the map centered on it
   - Stats per igate/digi (squares, farthest distance, packets gated) and per mobile
+- **Compare two stations** (`/aprs-coverage/compare`, linked from the Stats tab). Two mobiles, or
+  two igates/digis, side by side over weeks or months: share of transmissions heard per day, week
+  or month with 95% confidence bands, a plain-language verdict with a significance test, reach by
+  distance for igates/digis, and dated device notes (antenna swap, move) drawn on the chart. See
+  [Comparisons](#comparisons).
+- **Device log uploads** (optional). An app connected to a tracker can upload what it sent and heard
+  with an API key from the account page, which makes mobile comparisons exact instead of
+  estimated. Nothing else depends on it. See [Device log uploads](#device-log-uploads).
 - **Accounts** (`/aprs-coverage/admin`, linked from the map as *Join / Log in*). Anyone who runs
   an igate, digi or tracker can sign up with their callsign and the devices they run. The account
   and its devices stay pending, off the map and out of the APRS-IS filter, until an admin approves
@@ -252,6 +260,74 @@ How copies are counted:
 What it can't show: each igate's firmware also drops duplicates. An igate that
 hears a mobile directly and again through a digi gates only the first copy, so you
 see what each igate gated, not everything it received.
+
+### Comparisons
+
+`/compare` puts two stations side by side. Everything works from APRS-IS data alone; uploads
+only make mobile results exact.
+
+**Two mobiles: share of transmissions that reached APRS-IS.**
+- *Exact* where the mobile's transmit log was uploaded: each logged position beacon is matched
+  to a stored packet (same information field, received 30 s before to 90 s after the logged
+  time; closest pairs first, each stored packet used once, so a parked tracker repeating itself
+  doesn't fool it). Unmatched beacons were lost.
+- *Estimated* otherwise: from gaps between packets heard, at a beacon interval you give or one
+  estimated from the lower quartile of gaps. A gap over 15 minutes counts as parked, not lost.
+  Rough with smart beaconing; a fixed rate makes it reliable.
+- **Only when side by side** counts only packets sent while the two were within a set distance of
+  each other (positions interpolated across gaps up to 5 minutes). Run both trackers in one
+  vehicle with the same fixed rate, offset by half the interval so they don't collide, and this
+  is a direct test of the devices.
+- The verdict uses a two-proportion z-test. Also shown: share heard directly by an igate, stations
+  per packet (needs the duplicates feed), and, from uploaded receive logs, how often and how
+  strongly the mobile heard each digi repeat it.
+
+**Two igates/digis: of the transmissions from registered mobiles that anyone heard, which each
+heard.** *Counts as heard* is the first RF hop, or anywhere in the path. The verdict is a McNemar
+test on the transmissions only one of them heard. This needs the
+[duplicates feed](#duplicates-feed-your-own-aprsc); without it APRS-IS keeps only the first copy,
+and the page says so. Sites see different traffic, so for a device test swap the two between
+sites every week or two and add a note at each swap.
+
+**Device notes** are added on the compare page by a device's owner (or an admin), or uploaded by
+the app as `event` entries.
+
+### Device log uploads
+
+Optional. On the account page (*Account* tab, *Upload keys*) an approved user makes a key; it is
+shown once and stored hashed. An app sends:
+
+```http
+POST /aprs-coverage/api/devicelog
+Authorization: Bearer acv_...
+Content-Type: application/json
+
+{
+  "device": "K7ABC-9",
+  "app": "lora-fieldops-config-android/1.5.0",
+  "entries": [
+    {"type": "tx", "ts": 1763251200, "packet": "K7ABC-9>APLRT1,WIDE1-1:!4336.66N/11612.40W>comment"},
+    {"type": "rx", "ts": 1763251203, "packet": "K7ABC-9>APLRT1,SQB*,WIDE1*:!4336.66N/11612.40W>comment",
+     "rssi": -97, "snr": 6.5},
+    {"type": "event", "ts": 1763251300, "text": "beacon rate 60 s"}
+  ]
+}
+```
+
+- `device`: one of the key owner's approved devices (any device for an admin). A mobile registered
+  as a pattern (`K7ABC-*`) uploads per SSID; an object tracker as `SENDER:OBJECT`. `tx` and `rx`
+  are for mobiles; `event` for any device.
+- `ts`: unix seconds when the line was logged (the phone's clock is fine), within the last 400 days.
+- `tx`: a packet the device transmitted, as TNC2 text. A LoRa `<\xff\x01` prefix is stripped.
+  Non-position packets are kept but not counted.
+- `rx`: a packet it heard. Only its own packets repeated by a digi, and beacons from registered
+  igates/digis, are kept; other traffic is counted as ignored and dropped. `rssi` (dBm) and
+  `snr` (dB) are optional.
+- Up to 1000 entries per request. Retries are safe: an entry already stored counts as a duplicate.
+- Reply: `{"accepted": n, "duplicates": n, "ignored": n, "errors": [{"index": i, "error": "..."}]}`.
+  401 = bad key; 404 = not your device.
+
+Logs uploaded before APRS-IS delivers the packets are matched again every 5 minutes for 2 days.
 
 ### Configuration
 

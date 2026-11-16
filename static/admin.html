@@ -371,6 +371,22 @@
         <div class="field"><button class="btn">Change</button> <span id="pw-msg"></span></div>
       </form>
     </section>
+    <section class="card" id="keys-card" hidden>
+      <h2>Upload keys</h2>
+      <p class="muted small">Optional. An app connected to your tracker (for example the LoRa FieldOps config app)
+        can upload what the tracker sent and heard, so <a href="compare">comparisons</a> show exact counts instead
+        of estimates. Give the app a key; it can upload for your approved devices only. A key is shown once.</p>
+      <table class="keys"><thead><tr><th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+        <tbody id="keys-body"></tbody></table>
+      <form id="key-form" class="inline-form">
+        <input type="text" id="key-name" maxlength="60" placeholder="Name, e.g. Pixel phone">
+        <button class="btn">New key</button> <span id="key-msg"></span>
+      </form>
+      <div id="key-new" class="key-new" hidden>
+        <p class="small">Copy this key into the app now. It won't be shown again.</p>
+        <code id="key-value"></code> <button type="button" class="btn secondary" id="key-copy">Copy</button>
+      </div>
+    </section>
     <section class="card" id="withdraw-card" hidden>
       <h2>Withdraw sign-up</h2>
       <p class="muted small">Deletes your account and the devices you submitted.</p>

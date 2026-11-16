@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
-from . import auth, config, db, grid, ingest, logbuf, remotecfg
+from . import auth, compare, config, db, devicelog, grid, ingest, logbuf, remotecfg
 from .ingest import ingester
 from .packets import mobile_matches
 
@@ -52,9 +52,25 @@ async def lifespan(app: FastAPI):
     db.init()
     _end_streams_on_stop()
     task = asyncio.create_task(ingester.run())
+    rematch = asyncio.create_task(_rematch_loop())
     yield
     task.cancel()
+    rematch.cancel()
     await remote.sender.close()
+
+
+async def _rematch_loop():
+    """Uploaded transmit logs can arrive before APRS-IS delivers the packets
+    they should match; try again every few minutes."""
+    def run():
+        with db.session() as c:
+            devicelog.rematch_recent(c)
+    while True:
+        await asyncio.sleep(300)
+        try:
+            await asyncio.to_thread(run)
+        except Exception:
+            logging.getLogger("devicelog").exception("re-matching device logs failed")
 
 
 app = FastAPI(title="APRS Coverage", lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -67,7 +83,7 @@ async def revalidate_pages(request: Request, call_next):
     when unchanged), so browsers pick up a deploy without a hard refresh."""
     response = await call_next(request)
     path = request.url.path
-    if path in ("/", "/admin") or path.startswith("/static/"):
+    if path in ("/", "/admin", "/compare") or path.startswith("/static/"):
         response.headers.setdefault("Cache-Control", "no-cache")
     return response
 
@@ -80,6 +96,11 @@ def index():
 @app.get("/admin", include_in_schema=False)
 def admin_page():
     return FileResponse(STATIC / "admin.html")
+
+
+@app.get("/compare", include_in_schema=False)
+def compare_page():
+    return FileResponse(STATIC / "compare.html")
 
 
 # ── query helpers ────────────────────────────────────────────────────────────
@@ -322,6 +343,147 @@ async def api_live(request: Request):
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── comparisons (public, read-only) ─────────────────────────────────────────
+def _compare_range(start, end):
+    now = int(time.time())
+    end = end if end is not None else now
+    start = start if start is not None else end - 90 * 86400
+    if start > end:
+        raise HTTPException(400, "start must be before end")
+    return start, end
+
+
+def _two(a: str, b: str) -> tuple[str, str]:
+    a, b = a.strip().upper(), b.strip().upper()
+    if not a or not b:
+        raise HTTPException(422, "Pick two stations")
+    if a == b:
+        raise HTTPException(422, "Pick two different stations")
+    return a, b
+
+
+@app.get("/api/compare/mobiles")
+def api_compare_mobiles(
+    a: str, b: str,
+    start: int | None = None, end: int | None = None,
+    bucket: str = Query("week", pattern="^(day|week|month)$"),
+    tz: int = Query(0, ge=-840, le=840, description="viewer's offset from UTC, minutes east"),
+    together: bool = False,
+    sep_m: float = Query(200, ge=20, le=5000),
+    interval: int | None = Query(None, ge=5, le=3600, description="beacon interval, s; omit to estimate"),
+):
+    a, b = _two(a, b)
+    start, end = _compare_range(start, end)
+    with db.session() as c:
+        return compare.compare_mobiles(c, a, b, start, end, bucket, tz * 60, together, sep_m, interval)
+
+
+@app.get("/api/compare/nodes")
+def api_compare_nodes(
+    a: str, b: str,
+    start: int | None = None, end: int | None = None,
+    bucket: str = Query("week", pattern="^(day|week|month)$"),
+    tz: int = Query(0, ge=-840, le=840),
+    match: str = Query("first", pattern="^(first|any)$"),
+    mobiles: str | None = None,
+):
+    a, b = _two(a, b)
+    start, end = _compare_range(start, end)
+    with db.session() as c:
+        return compare.compare_nodes(c, a, b, start, end, bucket, tz * 60, match, _csv(mobiles) or None)
+
+
+class EventIn(BaseModel):
+    device: str
+    ts: int
+    text: str
+
+
+@app.post("/api/events")
+def add_event(body: EventIn, user: dict = Depends(auth.require_active)):
+    """A dated note on one of your devices (antenna swap, moved, new
+    firmware), shown on comparisons that include it."""
+    device, text = body.device.strip().upper(), body.text.strip()
+    if not text or len(text) > 300:
+        raise HTTPException(422, "Note: 1 to 300 characters")
+    with db.session() as c:
+        try:
+            devicelog._device_kind(c, user, device)
+        except devicelog.UploadError as e:
+            raise HTTPException(e.status, str(e))
+        cur = c.execute("INSERT OR IGNORE INTO device_events(device, ts, text, source, user_id) "
+                        "VALUES(?,?,?,'web',?)", (device, body.ts, text, user["id"]))
+    return {"id": cur.lastrowid if cur.rowcount else None}
+
+
+@app.delete("/api/events/{eid}")
+def delete_event(eid: int, user: dict = Depends(auth.require_active)):
+    with db.session() as c:
+        ev = c.execute("SELECT * FROM device_events WHERE id=?", (eid,)).fetchone()
+        if ev is None or (user["role"] != "admin" and ev["user_id"] != user["id"]):
+            raise HTTPException(404, "No such note")
+        c.execute("DELETE FROM device_events WHERE id=?", (eid,))
+    return {"ok": True}
+
+
+# ── device log uploads (optional; an app sends them with an API key) ────────
+class KeyIn(BaseModel):
+    name: str = ""
+
+
+@app.get("/api/account/keys")
+def list_keys(user: dict = Depends(auth.require_active)):
+    with db.session() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT id, name, prefix, created_at, last_used FROM api_keys WHERE user_id=? ORDER BY id",
+            (user["id"],))]
+
+
+@app.post("/api/account/keys")
+def create_key(body: KeyIn, user: dict = Depends(auth.require_active)):
+    """The key is returned once; only its hash is stored."""
+    name = body.name.strip()[:60]
+    key = devicelog.new_key()
+    with db.session() as c:
+        if c.execute("SELECT COUNT(*) FROM api_keys WHERE user_id=?", (user["id"],)).fetchone()[0] >= devicelog.MAX_KEYS:
+            raise HTTPException(422, f"At most {devicelog.MAX_KEYS} keys. Revoke one first.")
+        cur = c.execute("INSERT INTO api_keys(user_id, name, key_hash, prefix) VALUES(?,?,?,?)",
+                        (user["id"], name, devicelog.key_hash(key), key[:10]))
+    logging.getLogger("admin").info("%s created upload key %s", user["username"], key[:10])
+    return {"id": cur.lastrowid, "key": key, "prefix": key[:10], "name": name}
+
+
+@app.delete("/api/account/keys/{kid}")
+def revoke_key(kid: int, user: dict = Depends(auth.require_active)):
+    with db.session() as c:
+        if c.execute("DELETE FROM api_keys WHERE id=? AND user_id=?", (kid, user["id"])).rowcount == 0:
+            raise HTTPException(404, "No such key")
+    return {"ok": True}
+
+
+class DeviceLogIn(BaseModel):
+    device: str
+    app: str = ""
+    entries: list[dict]
+
+
+@app.post("/api/devicelog")
+def upload_device_log(body: DeviceLogIn, request: Request):
+    """Upload a device's own log: what it transmitted (tx), what it heard (rx)
+    and dated notes (event). Authenticated with an API key from the account
+    page, sent as 'Authorization: Bearer <key>'. See README, Device log uploads."""
+    authz = request.headers.get("authorization", "")
+    key = authz[7:].strip() if authz[:7].lower() == "bearer " else ""
+    with db.session() as c:
+        user = devicelog.user_for_key(c, key, int(time.time())) if key else None
+        if user is None:
+            raise HTTPException(401, "A valid API key is required (Authorization: Bearer <key>)")
+        try:
+            return devicelog.upload(c, user, body.device, body.entries)
+        except devicelog.UploadError as e:
+            raise HTTPException(e.status, str(e))
 
 
 # ── stations: validation and listing ─────────────────────────────────────────

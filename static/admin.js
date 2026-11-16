@@ -629,7 +629,35 @@
   function fillAccount() {
     $('a-username').value = ME.username; $('a-callsign').value = ME.callsign;
     $('a-name').value = ME.name; $('a-email').value = ME.email;
+    $('keys-card').hidden = ME.status !== 'active';
+    if (ME.status === 'active') loadKeys().catch(err => say('key-msg', err.message, true));
   }
+  async function loadKeys() {
+    const keys = await api('GET', 'api/account/keys');
+    $('keys-body').innerHTML = keys.length ? keys.map(k => `<tr>
+        <td>${esc(k.name) || '<span class="muted">—</span>'}</td><td><code>${esc(k.prefix)}…</code></td>
+        <td>${fmt(k.created_at)}</td><td>${fmt(k.last_used)}</td>
+        <td class="actions"><button class="btn danger" data-revoke="${k.id}">Revoke</button></td></tr>`).join('')
+      : '<tr><td colspan="5" class="muted">No keys.</td></tr>';
+  }
+  $('keys-body').addEventListener('click', async e => {
+    const b = e.target.closest('[data-revoke]');
+    if (!b || !armed(b, 'Really revoke?')) return;
+    try { await api('DELETE', `api/account/keys/${b.dataset.revoke}`); $('key-new').hidden = true; await loadKeys(); }
+    catch (err) { say('key-msg', err.message, true); }
+  });
+  $('key-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    try {
+      const k = await api('POST', 'api/account/keys', { name: $('key-name').value.trim() });
+      $('key-value').textContent = k.key; $('key-new').hidden = false; $('key-name').value = '';
+      await loadKeys();
+    } catch (err) { say('key-msg', err.message, true); }
+  });
+  $('key-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('key-value').textContent); say('key-msg', 'Copied.'); }
+    catch { say('key-msg', 'Select the key and copy it by hand.', true); }
+  });
   $('acct-form').addEventListener('submit', async e => {
     e.preventDefault();
     try {

@@ -104,6 +104,8 @@ A packet is rejected, and logged in `rejects` for the admin page, if:
 - `stations.owner_id` and `stations.status` (`pending`/`approved`/`rejected`, with the
   admin's reason). Only approved, active stations reach the filter, the map and remote config.
 - `rejects`, `settings`, `sessions` (one per login, tied to a user).
+- `api_keys` (hashed), `device_log` (uploaded tx/rx lines per mobile, with the matched
+  `txid` for transmissions) and `device_events` (dated notes). All optional.
 
 Grid squares are computed in SQL at query time (`app/grid.py`). Square width is fixed by
 `GRID_REF_LAT`, so squares stay the same shape across the region. Changing it moves
@@ -182,6 +184,19 @@ firmware, with the directed-message protocol in its `src/remote_cfg_utils.cpp`:
 - The last reported values per node (`node_config`) and a log of commands and replies
   (`node_config_log`, tokens masked) are stored. Tokens are never stored.
 
+## Comparisons (`app/compare.py`, `app/devicelog.py`, `/compare`)
+
+- Mobiles: share of transmissions that reached APRS-IS, per day/week/month, with Wilson 95%
+  intervals and a two-proportion z-test on the totals. Exact where a transmit log was
+  uploaded (log entries matched to packets by information field and time, closest pairs
+  first, one packet per entry), else estimated from gaps at a given or estimated interval.
+  "Side by side" keeps only transmissions sent while the two were within a distance of each
+  other, using every known fix (heard packets and logs) of the other mobile.
+- Igates/digis: over transmissions anyone heard, both / A only / B only / neither per bucket,
+  McNemar test on the discordant pairs, hear rate by distance band from each station.
+- Device logs come from an app (API key, `POST /api/devicelog`); the site works the same
+  without them. Igates and digis don't upload; their side is APRS-IS data only.
+
 ## Status
 
 Done:
@@ -213,6 +228,10 @@ Later, maybe:
   totals count each transmission once and each station that heard it once. Igate
   firmware still drops its own duplicates (direct and via a digi), which no feed
   can recover.
+- **Comparisons need time and fair conditions.** Mobiles that drove different places, or
+  igates at different sites, differ for reasons other than the device. Use side-by-side
+  runs for mobiles and site swaps for igates. Gap estimates are rough with smart
+  beaconing. A packet heard but rejected by a quality check counts as lost.
 - **No backfill.** History starts when the ingester first runs.
 - **Untraced hops.** A packet that went through a digi that does not insert its
   callsign cannot be credited to that digi.

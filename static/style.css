@@ -265,3 +265,60 @@ fieldset.device legend { font-weight: 600; padding: 0 4px; }
 .ll.lv-err { color: var(--bad); }
 .log-view mark { background: color-mix(in srgb, var(--warn) 40%, transparent); color: inherit; border-radius: 2px; }
 .ok-text { color: var(--ok); }
+
+/* account: upload keys */
+.inline-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.inline-form input[type=text] { flex: 1 1 200px; }
+.inline-form input, .inline-form select, input.tiny {
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--input); color: var(--text); font: inherit;
+}
+.key-new { margin-top: 10px; padding: 10px; border: 1px dashed var(--accent); border-radius: 8px; }
+.key-new code { word-break: break-all; font-size: 13px; }
+
+/* compare page. Series A/B colors: validated categorical pair (blue, orange), stepped for dark mode. */
+:root { --series-a: #2a78d6; --series-b: #eb6834; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --series-a: #3987e5; --series-b: #d95926; } }
+:root[data-theme="dark"] { --series-a: #3987e5; --series-b: #d95926; }
+.compare .field .muted.small { display: block; font-weight: 400; margin-top: 4px; }
+.field input.tiny { display: inline-block; width: 76px; margin: 0 2px; padding: 2px 6px; }
+.dot-a, .dot-b { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--series-a); vertical-align: baseline; }
+.dot-b { background: var(--series-b); border-radius: 2px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.tile { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.tile-name { font-weight: 600; }
+.tile-value { font-size: 32px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.2; margin: 4px 0 0; }
+.tile .small { margin-top: 3px; }
+.verdict { font-size: 15px; margin: 14px 0 6px; }
+.notes { padding-left: 18px; margin: 6px 0 0; }
+.notes li { margin: 3px 0; }
+.chart-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; margin-bottom: 4px; }
+.chart { width: 100%; overflow: hidden; touch-action: pan-y; }
+.chart-svg { display: block; max-width: 100%; height: auto; }
+.chart-svg .grid { stroke: var(--border); stroke-width: 1; opacity: .6; }
+.chart-svg .axis { fill: var(--muted); font-size: 11px; }
+.chart-svg .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart-svg .line-a, .chart-svg .pt-a { stroke: var(--series-a); }
+.chart-svg .line-b, .chart-svg .pt-b { stroke: var(--series-b); }
+.chart-svg .pt { stroke-width: 2; fill: var(--bg); }
+.chart-svg .band { stroke: none; opacity: .14; }
+.chart-svg .band-a { fill: var(--series-a); }
+.chart-svg .band-b { fill: var(--series-b); }
+.chart-svg .event line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4; }
+.chart-svg .cross { stroke: var(--muted); stroke-width: 1; }
+.chart-tip {
+  position: absolute; z-index: 10; pointer-events: none; font-size: 12px; padding: 6px 8px; min-width: 160px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow);
+}
+.chart-tip .tip-h { font-weight: 600; margin-bottom: 3px; }
+.chart-tip table { border-collapse: collapse; width: 100%; }
+.chart-tip td { padding: 1px 0; }
+.chart-tip td.num { text-align: right; padding-left: 10px; font-variant-numeric: tabular-nums; }
+.compare th.num, .compare td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hbar { display: inline-block; width: 120px; height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--border) 60%, transparent);
+  vertical-align: middle; margin-right: 6px; overflow: hidden; }
+.hbar span { display: block; height: 100%; border-radius: 4px; }
+.fill-a { background: var(--series-a); }
+.fill-b { background: var(--series-b); }
+.events { list-style: none; padding: 0; margin: 6px 0; }
+.events li { margin: 4px 0; }
+@media (max-width: 640px) { .tile-value { font-size: 26px; } .hbar { width: 70px; } }
