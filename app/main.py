@@ -1372,7 +1372,7 @@ _DB_LOGS = {
     "devicelog": ("device_log", lambda r: {
         "level": r["kind"], "tag": r["device"], "text": r["packet"],
         "note": ("not a position" if not r["is_pos"] else f"heard on APRS-IS (tx {r['txid']})" if r["txid"]
-                 else "not heard (yet)") if r["kind"] == "tx" else
+                 else "not heard") if r["kind"] == "tx" else
                 ", ".join(x for x in (
                     (f"repeated by {r['via'] or 'an untraced digi'}" if r["echo"] else f"beacon of {r['via']}"),
                     f"RSSI {r['rssi']:g} dBm" if r["rssi"] is not None else "",
@@ -1402,4 +1402,9 @@ def admin_log(source: str, after: int | None = Query(None, ge=0), limit: int = Q
             rows = c.execute(f"SELECT * FROM {table} ORDER BY id DESC LIMIT ?", (limit,)).fetchall()[::-1]
         else:
             rows = c.execute(f"SELECT * FROM {table} WHERE id > ? ORDER BY id LIMIT ?", (after, limit)).fetchall()
-    return {"epoch": 0, "entries": [{"id": r["id"], "ts": r["ts"], **conv(r)} for r in rows]}
+        entries = [{"id": r["id"], "ts": r["ts"], **conv(r)} for r in rows]
+        if source == "devicelog":  # say why each unheard transmission wasn't matched
+            for e, r in zip(entries, rows):
+                if r["kind"] == "tx" and r["is_pos"] and not r["txid"]:
+                    e["note"] = devicelog.explain_unheard(c, r["device"], r["ts"], r["info"])
+    return {"epoch": 0, "entries": entries}

@@ -277,3 +277,24 @@ def test_red_is_reserved_for_lost_beacons(client):
     for ok in ("#f0883e", "#e85aad", "#2f81f7"):
         r = client.post("/api/admin/stations", json={"callsign": f"K7OK{ok[1:3].upper()}", "kind": "igate", "color": ok}, headers=H)
         assert r.status_code == 200, r.text
+
+
+def test_explain_unheard(client):
+    register(client, {"callsign": "KG7KMV-15", "kind": "igate"})
+    ing = client.ingester
+    with db.session() as c:
+        def why(device, ts, info, now=None):
+            return devicelog.explain_unheard(c, device, ts, info, now=now or T + 86400)
+        assert why("K7ABC-9", T, "x", now=T + 30).startswith("not heard yet")
+        assert "none has ever been stored" in why("K7ABC-9", T, "x")
+        assert "no active, approved mobile registration matches K7ZZZ-9" in why("K7ZZZ-9", T, "x")
+        assert "KG7KMV-15 is registered as an igate/digi" in why("KG7KMV-15", T, "x")
+    ing.handle_line(is_line(1), now=T + 3)
+    with db.session() as c:
+        assert "has different text" in devicelog.explain_unheard(c, "K7ABC-9", T, f"{POS}other", now=T + 86400)
+        assert "matched to another logged beacon" in devicelog.explain_unheard(c, "K7ABC-9", T, f"{POS}n1", now=T + 86400)
+        assert "the last one was stored 16 min before it" in devicelog.explain_unheard(c, "K7ABC-9", T + 1000, "x", now=T + 86400)
+    # a packet APRS-IS delivered but the quality checks threw out
+    ing.handle_line(f"K7ABC-9>APLRT1,WIDE1-1,qAR,KG7KMV-13:!4500.00N/11000.00W>far", now=T + 2000)
+    with db.session() as c:
+        assert "rejected as speed_jump" in devicelog.explain_unheard(c, "K7ABC-9", T + 1998, "x", now=T + 86400)

@@ -268,6 +268,44 @@ def match(c, device: str, start: int, end: int) -> int:
     return len(got)
 
 
+def _ago(s: int) -> str:
+    s = abs(s)
+    return f"{s} s" if s < 120 else f"{s // 60} min" if s < 7200 else f"{s // 3600} h" if s < 172800 else f"{s // 86400} days"
+
+
+def explain_unheard(c, device: str, ts: int, info: str, now: int | None = None) -> str:
+    """Why a logged transmission has no matching packet, for the admin log:
+    rejected by a quality check, stored with different text (an app decoding
+    problem), the station isn't set up to be collected, or nothing arrived."""
+    now = now or int(time.time())
+    if ts > now - MATCH_AFTER_S - 30:
+        return "not heard yet (its packet may still be on the way)"
+    rej = c.execute("SELECT ts, reason FROM rejects WHERE source=? AND ts BETWEEN ? AND ? ORDER BY ABS(ts-?) LIMIT 1",
+                    (device, ts - MATCH_BEFORE_S, ts + MATCH_AFTER_S, ts)).fetchone()
+    if rej:
+        return f"not heard: APRS-IS delivered a packet {rej['ts'] - ts:+d} s from it, rejected as {rej['reason']}"
+    near = c.execute("SELECT ts, raw FROM packets WHERE mobile=? AND ts BETWEEN ? AND ? ORDER BY ABS(ts-?) LIMIT 1",
+                     (device, ts - MATCH_BEFORE_S, ts + MATCH_AFTER_S, ts)).fetchone()
+    if near:
+        if info_of(near["raw"]) == info:
+            return (f"not heard: an identical packet stored {near['ts'] - ts:+d} s from it was matched to "
+                    "another logged beacon with the same text")
+        return (f"not heard: a packet from {device} stored {near['ts'] - ts:+d} s from it has different text "
+                f"(logged {info[:40]!r}, APRS-IS {info_of(near['raw'])[:40]!r}); the app may be decoding it wrongly")
+    stations = c.execute("SELECT callsign, kind, active, status FROM stations").fetchall()
+    infra = [r for r in stations if r["kind"] != "mobile" and r["callsign"].upper() == device.split(":")[0]]
+    if infra:
+        return (f"not heard: {infra[0]['callsign']} is registered as an igate/digi, so its packets are never "
+                "collected as a mobile's")
+    pats = [r for r in stations if r["kind"] == "mobile" and mobile_matches(device, r["callsign"])]
+    if not any(r["active"] and r["status"] == "approved" for r in pats):
+        return f"not heard: no active, approved mobile registration matches {device}, so its packets aren't collected"
+    last = c.execute("SELECT MAX(ts) FROM packets WHERE mobile=?", (device,)).fetchone()[0]
+    when = f"the last one was stored {_ago(ts - last)} {'before' if last < ts else 'after'} it" if last \
+        else "none has ever been stored"
+    return f"not heard: no packet from {device} reached APRS-IS near this time ({when})"
+
+
 def rematch_recent(c, now: int | None = None) -> int:
     """Logs can be uploaded live, before APRS-IS has delivered the packets.
     Re-match recent unmatched transmissions; the ingester's run loop calls
