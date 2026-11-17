@@ -53,19 +53,30 @@
           <option value="single">Single color (overall coverage)</option>
           <option value="heard_by">Igate / digi that heard it</option>
           <option value="mobile">Reporting mobile station</option>
+          <option value="reliability">Reliability (share of beacons heard)</option>
         </select>
       </label>
+      <div id="rel-opts" hidden>
+        <p class="hint muted">Of the beacons sent from each square, the share that reached APRS-IS. Red squares
+          were driven but rarely heard: those need work. Blank means nobody drove there.</p>
+        <label class="check"><input type="checkbox" id="estimates" checked> Include estimates for trackers without a
+          transmit log</label>
+        <p class="hint muted">Exact counts come from trackers that upload their log through the LoRa FieldOps app.
+          For the rest, lost beacons are estimated from gaps between the packets heard while moving.</p>
+      </div>
       <label class="field inline" id="single-color-row">Coverage color
         <input type="color" id="single-color" value="#2f81f7">
       </label>
 
       <p class="hint muted" id="single-red" hidden>Red is kept for lost beacons; the map uses blue instead.</p>
 
-      <label class="check"><input type="checkbox" id="shade" checked> Shade by packet count (signal strength)</label>
+      <label class="check"><input type="checkbox" id="shade" checked> <span id="shade-text">Shade by packet count</span></label>
+      <div id="fails-opts">
       <label class="check"><input type="checkbox" id="show-fails"> Outline squares with lost beacons (red)</label>
       <p class="hint muted">From trackers that upload what they send through the LoRa FieldOps app: a red frame
         where beacons were sent but never reached APRS-IS, stronger with more lost. Squares those trackers
         didn't visit show nothing either way.</p>
+      </div>
 
       <label class="field">Square size
         <select id="cell"></select>

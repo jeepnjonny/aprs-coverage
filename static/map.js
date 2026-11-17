@@ -7,6 +7,12 @@
   const PALETTE = ['#2f81f7', '#2da44e', '#f2d024', '#8250df', '#e85aad',
                    '#1fb6c9', '#f0883e', '#8b5a2b', '#1f3a93', '#9acd32', '#4b0082'];
   const FAIL_RED = '#d1242f';
+  // Reliability: share of beacons that reached APRS-IS. Diverging red (lost) to
+  // blue (heard) with a gray middle; checked for colour-blind separation.
+  const REL_BINS = [[0.9, '#1a4fb5', '90–100%'], [0.75, '#4a93f0', '75–90%'], [0.5, '#8c8c8c', '50–75%'],
+                    [0.25, '#e8853a', '25–50%'], [0, '#c4212b', 'under 25%']];
+  // Fewer beacons, less certain: drawn fainter. [min beacons, opacity factor, label]
+  const REL_CONF = [[12, 1.0, '12+'], [5, 0.75, '5–11'], [2, 0.5, '2–4'], [1, 0.3, '1']];
   // [min lost beacons, outline opacity, outline width, legend label]
   const FAIL_STEPS = [[12, 1.0, 3, '12+'], [5, 0.85, 2.5, '5–11'], [2, 0.65, 2, '2–4'], [1, 0.45, 1.5, '1']];
   const SHADE = [[31, 1.0, '31+'], [12, 0.82, '12–30'], [5, 0.64, '5–11'], [2, 0.45, '2–4'], [1, 0.28, '1']];
@@ -20,6 +26,7 @@
     basemap: 'osm', match: 'first', mobiles: null, heard: null,   // null = all selected
     hw: null, hwScope: 'both',                                    // hardware filter; null = all
     fails: false,                                                 // red outline where beacons were lost
+    estimates: true,                                              // reliability: estimate unlogged trackers
   };
   let S = { ...DEFAULTS };
   try { Object.assign(S, JSON.parse(localStorage.getItem('acov-ui') || '{}')); } catch {}
@@ -65,7 +72,8 @@
   const meRenderer = L.svg({ pane: 'me' });
 
   // ── data ──────────────────────────────────────────────────────────────────
-  let CFG = null, STATIONS = [], MOBILES = [], COVERAGE = null, FAILS = null;
+  let CFG = null, STATIONS = [], MOBILES = [], COVERAGE = null, FAILS = null, RELI = null;
+  const isRel = () => S.color === 'reliability';
   const infraCalls = () => STATIONS.filter(s => s.kind !== 'mobile').map(s => s.callsign);
 
   async function getJSON(url) {
@@ -95,7 +103,7 @@
     if (withHeard) {
       if (heard !== null) p.set('heard_by', heard.join(','));
       p.set('match', S.match);
-      p.set('color', S.color);
+      p.set('color', isRel() ? 'single' : S.color);
     }
     return p;
   }
@@ -255,8 +263,48 @@
   }
   const failStep = n => FAIL_STEPS.find(([min]) => n >= min) || FAIL_STEPS[FAIL_STEPS.length - 1];
 
+  // ── reliability view ──────────────────────────────────────────────────────
+  const relBin = pct => REL_BINS.find(([min]) => pct >= min) || REL_BINS[REL_BINS.length - 1];
+  const relConf = n => (REL_CONF.find(([min]) => n >= min) || REL_CONF[REL_CONF.length - 1])[1];
+  const filtered = () => effHeard() !== null;
+
+  function relTip([, , h, n, eh, en, last], cov) {
+    const pct = Math.round(h / n * 100);
+    const est = n - en;
+    let html = `<div class="tip-top"><span class="swatch" style="background:${relBin(h / n)[1]}"></span>
+        <b>${pct}% heard</b> <span class="muted">· ${sizeText(RELI.cell_m)} square</span></div>
+      <div>${h.toLocaleString()} of ${n.toLocaleString()} beacon${n === 1 ? '' : 's'} reached APRS-IS${filtered() ? ' via the selected igates / digis' : ''}</div>`;
+    if (en) html += `<div class="muted">${eh.toLocaleString()} of ${en.toLocaleString()} from transmit logs (exact)</div>`;
+    if (est) html += `<div class="muted">${est.toLocaleString()} estimated from gaps between packets heard</div>`;
+    if (n < 5) html += `<div class="muted">Few beacons: treat as a hint, not a verdict</div>`;
+    html += `<div class="muted">Last beacon ${ago(last)}</div>`;
+    if (cov) html += tipList('Heard by', cov[5], true) + tipList('Mobiles', cov[6], false);
+    return html;
+  }
+
+  function renderReliability() {
+    const { dlat, dlon, cells } = RELI;
+    const op = S.opacity / 100;
+    const cov = new Map((COVERAGE ? COVERAGE.cells : []).map(c => [`${c[0]},${c[1]}`, c]));
+    for (const cell of cells) {
+      const [x, y, h, n] = cell;
+      const color = relBin(h / n)[1];
+      const rect = L.rectangle([[y * dlat, x * dlon], [(y + 1) * dlat, (x + 1) * dlon]], {
+        renderer: cellRenderer, color, weight: S.borders ? 0.6 : 0, opacity: S.borders ? Math.min(1, op + 0.2) : 0,
+        fillColor: color, fillOpacity: op * (S.shade ? relConf(n) : 1),
+      });
+      rect.bindTooltip(() => relTip(cell, cov.get(`${x},${y}`)), { className: 'cell-tip', sticky: true });
+      cellLayer.addLayer(rect);
+    }
+    renderLegend(new Map());
+    const pct = RELI.sent ? Math.round(RELI.heard / RELI.sent * 100) : 0;
+    $('summary').textContent = `${cells.length.toLocaleString()} squares · ${pct}% of ${RELI.sent.toLocaleString()} beacons heard`
+      + (RELI.exact ? ` · ${RELI.exact.toLocaleString()} from transmit logs` : '');
+  }
+
   function renderCells() {
     cellLayer.clearLayers();
+    if (isRel()) { if (RELI) renderReliability(); return; }
     if (!COVERAGE) return;
     const { dlat, dlon, cells } = COVERAGE;
     const op = S.opacity / 100;
@@ -305,6 +353,18 @@
 
   function renderLegend(keys) {
     const el = $('legend');
+    if (isRel()) {
+      if (!RELI || !RELI.cells.length) { el.hidden = true; return; }
+      let html = `<h3>Share of beacons heard</h3>` + REL_BINS.map(([, c, label]) =>
+        `<div class="row"><span class="swatch" style="background:${c}"></span>${label}</div>`).join('');
+      if (S.shade) {
+        html += `<h3>Beacons per square</h3><div class="scale">` + [...REL_CONF].reverse().map(([, f, label]) =>
+          `<div><span style="background:var(--muted);opacity:${(S.opacity / 100) * f}"></span>${label}</div>`).join('') + '</div>';
+      }
+      el.innerHTML = html;
+      el.hidden = false;
+      return;
+    }
     const hasFails = S.fails && FAILS && FAILS.cells.length;
     if (!COVERAGE || (!COVERAGE.cells.length && !hasFails)) { el.hidden = true; return; }
     const base = S.color === 'single' ? singleColor() : 'var(--muted)';
@@ -454,12 +514,14 @@
   async function refresh() {
     const seq = ++loadSeq;
     try {
-      const [cov, fails] = await Promise.all([
+      const [cov, fails, rel] = await Promise.all([
         getJSON('api/coverage?' + queryParams()),
-        S.fails ? getJSON('api/failures?' + queryParams(false)).catch(() => null) : null,
+        S.fails && !isRel() ? getJSON('api/failures?' + queryParams(false)).catch(() => null) : null,
+        isRel() ? getJSON(`api/reliability?${queryParams()}&estimates=${S.estimates}`) : null,
       ]);
       if (seq !== loadSeq) return;  // a newer request superseded this one
       COVERAGE = cov;
+      RELI = rel;
       FAILS = fails && { ...fails, byKey: new Map(fails.cells.map(c => [`${c[0]},${c[1]}`, c.slice(2)])) };
       renderCells();
     } catch (e) {
@@ -564,6 +626,9 @@
   function syncVisibility() {
     $('custom-range').hidden = S.preset !== 'custom';
     $('single-color-row').hidden = S.color !== 'single';
+    $('rel-opts').hidden = !isRel();
+    $('fails-opts').hidden = isRel();  // the reliability colours already show lost beacons
+    $('shade-text').textContent = isRel() ? 'Fade squares with few beacons (less certain)' : 'Shade by packet count';
     $('single-red').hidden = S.color !== 'single' || !isReddish(S.singleColor);
     $('opacity-val').textContent = S.opacity + '%';
   }
@@ -578,6 +643,7 @@
     bind('color-mode', 'color', { after: () => { syncVisibility(); buildFilters(); refresh(); } });
     bind('single-color', 'singleColor', { after: () => { syncVisibility(); renderCells(); } });
     bind('show-fails', 'fails', { prop: 'checked' });
+    bind('estimates', 'estimates', { prop: 'checked' });
     bind('shade', 'shade', { prop: 'checked', after: renderCells });
     bind('cell', 'cell', { parse: v => parseInt(v, 10) });
     bind('opacity', 'opacity', { parse: v => parseInt(v, 10), after: () => { syncVisibility(); renderCells(); } });

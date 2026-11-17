@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
-from . import auth, compare, config, db, devicelog, grid, ingest, logbuf, remotecfg
+from . import auth, compare, config, db, devicelog, grid, ingest, logbuf, reliability, remotecfg
 from .ingest import ingester
 from .packets import mobile_matches
 
@@ -258,6 +258,32 @@ def api_coverage(
         # [x, y, count, last_ts, {color key: count}, {heard_by: count}, {mobile: count}, first_ts]
         "cells": list(cells.values()),
     }
+
+
+@app.get("/api/reliability")
+def api_reliability(
+    start: int | None = None,
+    end: int | None = None,
+    cell: int = 1000,
+    mobiles: str | None = None,
+    heard_by: str | None = None,
+    match: str = Query("first", pattern="^(first|any)$"),
+    estimates: bool = True,
+):
+    """Per square, the share of beacons sent from it that reached APRS-IS:
+    exact from uploaded transmit logs, estimated from gaps between heard
+    packets for other trackers (estimates=false for exact only). With a
+    station filter, only those stations' hearing counts."""
+    start, end = _time_range(start, end)
+    cell = _cell_size(cell)
+    with db.session() as c:
+        mob, hb = _csv(mobiles), _csv(heard_by)
+        heard_ok = None
+        if hb is not None:
+            # a little past the end: a beacon logged just before it may arrive just after
+            where, args = _where(c, start, end + 600, mob, hb, match)
+            heard_ok = {r[0] for r in c.execute(f"SELECT DISTINCT txid FROM packets WHERE {where}", args)}
+        return reliability.reliability(c, start, end, cell, mob, heard_ok, estimates)
 
 
 @app.get("/api/failures")

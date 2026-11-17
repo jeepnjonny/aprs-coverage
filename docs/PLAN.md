@@ -197,6 +197,17 @@ firmware, with the directed-message protocol in its `src/remote_cfg_utils.cpp`:
 - Device logs come from an app (API key, `POST /api/devicelog`); the site works the same
   without them. Igates and digis don't upload; their side is APRS-IS data only.
 
+## Reliability view (`app/reliability.py`)
+
+- Per square: beacons sent and heard. Logged beacons (uploaded transmit logs, minus repeats
+  APRS-IS drops as duplicates) count exactly at their own position. For trackers without a log,
+  every heard packet counts as sent and heard, and a gap between two heard packets while moving
+  (over 0.1 km and 3 km/h on average, under an hour) adds round(gap / interval) - 1 lost beacons
+  spread along the straight line between them. The interval is each mobile's lower quartile of
+  gaps. Heard packets within 2 minutes of a logged beacon are left to the log.
+- A station filter changes only what counts as heard, so the map shows what those stations
+  alone would cover.
+
 ## Status
 
 Done:

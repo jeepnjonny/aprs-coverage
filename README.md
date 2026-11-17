@@ -37,7 +37,15 @@ where the local igates and digipeaters can actually hear a mobile.
   - OpenStreetMap, OpenTopoMap, USGS Topo and USGS Imagery basemaps
   - Square size from 100 m to 2 km, adjustable overlay opacity
   - Color squares by igate/digi, by reporting mobile, or one color for overall coverage
-  - Shade squares by packet count as a rough measure of signal strength
+  - **Reliability view** (Color squares by → Reliability): each square colored by the share of
+    beacons sent from it that reached APRS-IS, red (under 25%) through gray to blue (90%+).
+    Red squares were driven but rarely heard; blank means nobody drove there. Exact where a
+    tracker uploads its transmit log; for other trackers, lost beacons are estimated from gaps
+    between packets heard while moving (parked gaps are skipped) and placed along the line
+    between the two fixes. Squares with few beacons are drawn fainter. The igate/digi filter
+    applies: pick one station to see what it alone would cover. `GET /api/reliability`.
+  - Shade squares by packet count. This mostly shows how much time was spent in a square, not
+    signal quality; use the reliability view for that
   - Outline squares with lost beacons (option): a red frame where a tracker that uploads its
     transmit log sent beacons that never reached APRS-IS, thicker and stronger with more lost.
     It sits on top of the reception colour without changing it. Red is reserved for this: no

@@ -322,3 +322,58 @@ def test_fast_identical_beacons_are_not_counted_lost(client):
     assert client.get("/api/failures", params={"start": T - 10, "end": T + 3600}).json()["cells"] == []
     log = client.get("/api/admin/logs/devicelog").json()["entries"]
     assert "dropped it as a duplicate" in log[1]["note"]
+
+
+# ── reliability view ─────────────────────────────────────────────────────────
+def _pos(lat, lon):
+    la = f"{int(lat):02d}{(lat % 1) * 60:05.2f}N"
+    lo = f"{int(-lon):03d}{(-lon % 1) * 60:05.2f}W"
+    return f"!{la}/{lo}>"
+
+
+def test_reliability_estimates_gaps_along_the_road(client):
+    register(client)
+    ing = client.ingester
+    # K7ABC-7 drives east at 60 s beacons, ~1 km per beacon; beacons 5-8 lost.
+    for i in range(12):
+        if i not in (5, 6, 7, 8):
+            ing.handle_line(f"K7ABC-7>APLRT1,WIDE1-1,qAR,KG7KMV-13:{_pos(43.6, -116.5 + i * 0.0124)}b{i}", now=T + i * 60)
+    d = client.get("/api/reliability", params={"start": T - 10, "end": T + 3600, "cell": 1000}).json()
+    assert (d["sent"], d["heard"], d["exact"]) == (12, 8, 0)
+    assert d["mobiles"]["K7ABC-7"]["interval_s"] == 60
+    from app import grid
+    dlat, dlon = grid.cell_deg(1000)
+    lost = {(x, y) for x, y, h, n, *_ in d["cells"] if h == 0}
+    # the four lost beacons land between the 5th and 10th fixes
+    xs = sorted(x for x, y in lost)
+    assert len(xs) >= 3 and min(xs) > int((-116.5 + 4 * 0.0124) // dlon) and max(xs) < int((-116.5 + 9 * 0.0124) // dlon) + 1
+    # exact only: this tracker has no log, so nothing
+    assert client.get("/api/reliability", params={"start": T - 10, "end": T + 3600, "estimates": "false"}).json()["sent"] == 0
+
+
+def test_reliability_parked_gap_is_not_loss(client):
+    register(client)
+    ing = client.ingester
+    for i in range(6):  # driving, 60 s
+        ing.handle_line(f"K7ABC-7>APLRT1,WIDE1-1,qAR,KG7KMV-13:{_pos(43.6, -116.5 + i * 0.0124)}b{i}", now=T + i * 60)
+    # parked 50 minutes at the last spot, then heard again from the same spot
+    ing.handle_line(f"K7ABC-7>APLRT1,WIDE1-1,qAR,KG7KMV-13:{_pos(43.6, -116.5 + 5 * 0.0124)}later", now=T + 3300)
+    d = client.get("/api/reliability", params={"start": T - 10, "end": T + 7200}).json()
+    assert (d["sent"], d["heard"]) == (7, 7)
+
+
+def test_reliability_uses_logs_and_station_filter(client):
+    register(client)
+    ing = client.ingester
+    lost = {2, 5, 8}
+    for i in range(10):
+        if i not in lost:
+            igate = "KJ7NYE-10" if i < 4 else "KG7KMV-13"
+            ing.handle_line(is_line(i, igate=igate), now=T + i * 60 + 2)
+    key = key_for(client)
+    client.post("/api/devicelog", headers={"Authorization": f"Bearer {key}"}, json={
+        "device": "K7ABC-9", "entries": [{"type": "tx", "ts": T + i * 60, "packet": tx_line(i)} for i in range(10)]})
+    d = client.get("/api/reliability", params={"start": T - 10, "end": T + 3600}).json()
+    assert (d["sent"], d["heard"], d["exact"]) == (10, 7, 10)  # logged: no double counting of heard packets
+    only = client.get("/api/reliability", params={"start": T - 10, "end": T + 3600, "heard_by": "KJ7NYE-10"}).json()
+    assert (only["sent"], only["heard"]) == (10, 3)  # what KJ7NYE-10 alone would have covered
