@@ -393,3 +393,21 @@ def test_reliability_same_second_packets(client):
         c.execute("UPDATE packets SET txid=id WHERE txid IS NULL")
     r = client.get("/api/reliability", params={"start": T - 10, "end": T + 3600})
     assert r.status_code == 200 and r.json()["sent"] == 9
+
+
+def test_reliability_counts_packet_before_its_log_arrives(client):
+    """The app uploads about once a minute: a packet heard after the newest
+    logged beacon counts straight away, then once (exactly) after the upload."""
+    register(client)
+    ing = client.ingester
+    key = key_for(client)
+    auth = {"Authorization": f"Bearer {key}"}
+    client.post("/api/devicelog", headers=auth, json={"device": "K7ABC-9", "entries": [
+        {"type": "tx", "ts": T + i * 30, "packet": tx_line(i)} for i in range(4)]})  # all lost
+    ing.handle_line(is_line(4), now=T + 4 * 30 + 2)  # heard; its log entry not uploaded yet
+    d = client.get("/api/reliability", params={"start": T - 10, "end": T + 3600}).json()
+    assert (d["sent"], d["heard"], d["exact"]) == (5, 1, 4)
+    client.post("/api/devicelog", headers=auth, json={"device": "K7ABC-9", "entries": [
+        {"type": "tx", "ts": T + 4 * 30, "packet": tx_line(4)}]})
+    d = client.get("/api/reliability", params={"start": T - 10, "end": T + 3600}).json()
+    assert (d["sent"], d["heard"], d["exact"]) == (5, 1, 5)

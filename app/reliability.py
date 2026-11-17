@@ -23,6 +23,7 @@ from .compare import beacon_interval
 from .grid import approx_km
 
 LOG_NEAR_S = 120          # a heard packet this close to a logged beacon is the log's business
+LOG_CATCHUP_S = 10        # ...once the log reaches past it (beacon sent a few seconds before it arrived)
 MAX_GAP_S = 3600          # longer silences are trips apart, not lost beacons
 MIN_MOVE_KM = 0.1         # ends of a gap closer than this: parked, nothing to estimate
 MIN_SPEED_KMH = 3.0       # ...or moving slower than this on average (stopped part of the way)
@@ -81,19 +82,26 @@ def reliability(c, start: int, end: int, cell_m: int, mobiles: list[str] | None,
         def logged(h):
             if h["txid"] in matched:
                 return True
+            # A packet newer than the log is still waiting for its log entry (the
+            # app uploads about once a minute): count it as heard now, from the
+            # packet, rather than leave it out until the upload arrives.
+            if not log_ts or log_ts[-1] < h["ts"] - LOG_CATCHUP_S:
+                return False
             i = bisect.bisect_left(log_ts, h["ts"] - LOG_NEAR_S)
             return i < len(log_ts) and log_ts[i] <= h["ts"] + LOG_NEAR_S
 
         interval = beacon_interval(hs) if estimates else None
         per_mobile[m] = {"logged": len(log), "interval_s": interval}
-        if not interval:
-            continue  # no estimate possible: unlogged packets of this mobile are left out
+        if not estimates or (not interval and not log):
+            # No interval, no log: losses can't be estimated, and counting only
+            # what was heard would read as 100%, so its packets are left out.
+            continue
         flags = [logged(h) for h in hs]
         for i, h in enumerate(hs):
             if flags[i]:
                 continue
             add(h["lat"], h["lon"], h["ts"], ok(h["txid"]), False)
-            if i == 0 or flags[i - 1]:
+            if not interval or i == 0 or flags[i - 1]:
                 continue
             p = hs[i - 1]
             gap = h["ts"] - p["ts"]

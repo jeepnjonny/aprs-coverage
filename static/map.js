@@ -571,7 +571,7 @@
   }
 
   // ── live feed ─────────────────────────────────────────────────────────────
-  let liveTimer = null;
+  let liveTimer = null, logTimer = null;
   function setLive(state, text) {
     $('live').className = 'live ' + state;
     $('live-text').textContent = text;
@@ -589,7 +589,12 @@
         setTimeout(() => liveLayer.removeLayer(c), 30000);
       }
       if (!MOBILES.includes(p.mobile)) { MOBILES.push(p.mobile); MOBILES.sort(); buildFilters(); }
-      if (isRelative()) { clearTimeout(liveTimer); liveTimer = setTimeout(refresh, 2500); }
+      if (isRelative()) {
+        clearTimeout(liveTimer); liveTimer = setTimeout(refresh, 2500);
+        // Trackers' transmit logs arrive from the app about a minute later; look
+        // again then so the lost-beacon and reliability counts catch up.
+        if (isRel() || S.fails) { clearTimeout(logTimer); logTimer = setTimeout(refresh, 90000); }
+      }
       setLive('ok', 'live · ' + stationName(p.mobile));
     };
   }
