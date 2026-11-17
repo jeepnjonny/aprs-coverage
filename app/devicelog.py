@@ -123,7 +123,10 @@ def _device_kind(c, user: dict, device: str) -> str:
     for r in rows:
         if r["kind"] != "mobile" and r["callsign"].upper() == device:
             return "node"
-    raise UploadError(404, f"{device} is not an approved device of yours")
+    mine = ", ".join(r["callsign"] for r in rows) or "none"
+    raise UploadError(404, f"{device} is not an approved device of yours (approved: {mine}). "
+                           "A mobile registered as a pattern uploads as the callsign it matches, "
+                           "e.g. K7ABC-9 for K7ABC-*, or K7SWI:CAR03 for K7SWI:CAR*.")
 
 
 def _number(v, lo, hi):
