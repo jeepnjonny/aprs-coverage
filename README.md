@@ -78,7 +78,7 @@ where the local igates and digipeaters can actually hear a mobile.
 - **Logs tab** (admin). Live viewer for the APRS-IS traffic (the coverage feed and node-config
   connection line by line, plus duplicates-feed lines from registered stations, each with what
   the ingester did with it), the app's own log, and the accepted
-  packet, rejected packet and node-config logs. Live search with highlighting (plain text or
+  packet, rejected packet and node-config logs, and device log uploads. Live search with highlighting (plain text or
   regex), type filter, pause, auto-scroll, wrap, UTC/local time, clear and download.
 
 See [docs/PLAN.md](docs/PLAN.md) for the design, attribution rules and known limitations.
@@ -324,8 +324,13 @@ Content-Type: application/json
   igates/digis, are kept; other traffic is counted as ignored and dropped. `rssi` (dBm) and
   `snr` (dB) are optional.
 - Up to 1000 entries per request. Retries are safe: an entry already stored counts as a duplicate.
-- Reply: `{"accepted": n, "duplicates": n, "ignored": n, "errors": [{"index": i, "error": "..."}]}`.
-  401 = bad key; 404 = not your device.
+- Reply: `{"accepted": n, "duplicates": n, "ignored": n, "errors": [{"index": i, "error": "..."}],
+  "tx": n, "heard": n}`: `tx` new position transmissions in this upload, `heard` how many of
+  those already matched a packet on APRS-IS. 401 = bad key; 404 = not your device (the message
+  lists the account's approved devices).
+- The admin Logs tab has **Device uploads** (each upload and refusal with the reason, keys
+  created and revoked, device notes, re-matching) and **Uploaded device log** (every stored
+  line, whether each transmission was heard, and signal strength).
 
 Logs uploaded before APRS-IS delivers the packets are matched again every 5 minutes for 2 days.
 

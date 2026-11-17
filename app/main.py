@@ -64,7 +64,9 @@ async def _rematch_loop():
     they should match; try again every few minutes."""
     def run():
         with db.session() as c:
-            devicelog.rematch_recent(c)
+            n = devicelog.rematch_recent(c)
+        if n:
+            logbuf.DEVICES.add("match", "", f"re-matched recent logged transmissions: {n} now heard on APRS-IS")
     while True:
         await asyncio.sleep(300)
         try:
@@ -415,6 +417,8 @@ def add_event(body: EventIn, user: dict = Depends(auth.require_active)):
             raise HTTPException(e.status, str(e))
         cur = c.execute("INSERT OR IGNORE INTO device_events(device, ts, text, source, user_id) "
                         "VALUES(?,?,?,'web',?)", (device, body.ts, text, user["id"]))
+    if cur.rowcount:
+        logbuf.DEVICES.add("note", f"{user['username']} {device}", f"added note for {_ts(body.ts)}: {text}")
     return {"id": cur.lastrowid if cur.rowcount else None}
 
 
@@ -425,7 +429,12 @@ def delete_event(eid: int, user: dict = Depends(auth.require_active)):
         if ev is None or (user["role"] != "admin" and ev["user_id"] != user["id"]):
             raise HTTPException(404, "No such note")
         c.execute("DELETE FROM device_events WHERE id=?", (eid,))
+    logbuf.DEVICES.add("note", f"{user['username']} {ev['device']}", f"deleted note for {_ts(ev['ts'])}: {ev['text']}")
     return {"ok": True}
+
+
+def _ts(ts: int) -> str:
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
 
 
 # ── device log uploads (optional; an app sends them with an API key) ────────
@@ -452,14 +461,18 @@ def create_key(body: KeyIn, user: dict = Depends(auth.require_active)):
         cur = c.execute("INSERT INTO api_keys(user_id, name, key_hash, prefix) VALUES(?,?,?,?)",
                         (user["id"], name, devicelog.key_hash(key), key[:10]))
     logging.getLogger("admin").info("%s created upload key %s", user["username"], key[:10])
+    logbuf.DEVICES.add("key", user["username"], f"created upload key {key[:10]}…" + (f" ({name})" if name else ""))
     return {"id": cur.lastrowid, "key": key, "prefix": key[:10], "name": name}
 
 
 @app.delete("/api/account/keys/{kid}")
 def revoke_key(kid: int, user: dict = Depends(auth.require_active)):
     with db.session() as c:
-        if c.execute("DELETE FROM api_keys WHERE id=? AND user_id=?", (kid, user["id"])).rowcount == 0:
+        k = c.execute("SELECT prefix, name FROM api_keys WHERE id=? AND user_id=?", (kid, user["id"])).fetchone()
+        if k is None:
             raise HTTPException(404, "No such key")
+        c.execute("DELETE FROM api_keys WHERE id=?", (kid,))
+    logbuf.DEVICES.add("key", user["username"], f"revoked upload key {k['prefix']}…" + (f" ({k['name']})" if k["name"] else ""))
     return {"ok": True}
 
 
@@ -476,14 +489,27 @@ def upload_device_log(body: DeviceLogIn, request: Request):
     page, sent as 'Authorization: Bearer <key>'. See README, Device log uploads."""
     authz = request.headers.get("authorization", "")
     key = authz[7:].strip() if authz[:7].lower() == "bearer " else ""
+    ip = auth.client_ip(request)
+    app_note = body.app.strip()[:80]
     with db.session() as c:
         user = devicelog.user_for_key(c, key, int(time.time())) if key else None
         if user is None:
+            why = "no key" if not key else f"unknown or revoked key {key[:10]}…"
+            logbuf.DEVICES.add("refused", ip, f"upload for {body.device.strip().upper() or '(no device)'}: {why}", app_note)
             raise HTTPException(401, "A valid API key is required (Authorization: Bearer <key>)")
+        tag = f"{user['username']} {body.device.strip().upper()}"
         try:
-            return devicelog.upload(c, user, body.device, body.entries)
+            res = devicelog.upload(c, user, body.device, body.entries)
         except devicelog.UploadError as e:
+            logbuf.DEVICES.add("refused", tag, f"upload of {len(body.entries)} entries: {e}", app_note)
             raise HTTPException(e.status, str(e))
+    text = (f"{len(body.entries)} entries: {res['accepted']} new, {res['duplicates']} already stored, "
+            f"{res['ignored']} ignored, {len(res['errors'])} with errors")
+    if res["tx"]:
+        text += f"; {res['heard']} of {res['tx']} new transmissions heard on APRS-IS"
+    errs = "; ".join(f"#{e['index']}: {e['error']}" for e in res["errors"][:3])
+    logbuf.DEVICES.add("upload", tag, text, " | ".join(x for x in (app_note, errs) if x))
+    return res
 
 
 # ── stations: validation and listing ─────────────────────────────────────────
@@ -1281,8 +1307,13 @@ LOG_SOURCES = {
     "rejects": ("Rejected packets", "Packets from registered mobiles that failed a data-quality check. "
                 "Kept for 2 days."),
     "nodecfg": ("Node config", "Remote-config commands sent to igates/digis, with the replies."),
+    "devices": ("Device uploads", "Device log uploads from apps (accepted, and refused with the reason), "
+                "upload keys created and revoked, device notes, and background re-matching. In memory: the "
+                "newest 2000 since the last restart."),
+    "devicelog": ("Uploaded device log", "Lines stored from device log uploads: what each mobile transmitted "
+                  "(tx, and whether it reached APRS-IS) and heard (rx, with signal strength)."),
 }
-_RING_LOGS = {"aprs": logbuf.APRS, "app": logbuf.APP}
+_RING_LOGS = {"aprs": logbuf.APRS, "app": logbuf.APP, "devices": logbuf.DEVICES}
 _DB_LOGS = {
     # table, row -> entry
     "packets": ("packets", lambda r: {
@@ -1290,6 +1321,14 @@ _DB_LOGS = {
         "note": f"igate {r['igate']}, {r['hops']} hop{'s' if r['hops'] != 1 else ''}"
                 + (", duplicates feed" if r["dupe"] else "")}),
     "rejects": ("rejects", lambda r: {"level": r["reason"], "tag": r["source"] or "", "text": r["raw"], "note": ""}),
+    "devicelog": ("device_log", lambda r: {
+        "level": r["kind"], "tag": r["device"], "text": r["packet"],
+        "note": ("not a position" if not r["is_pos"] else f"heard on APRS-IS (tx {r['txid']})" if r["txid"]
+                 else "not heard (yet)") if r["kind"] == "tx" else
+                ", ".join(x for x in (
+                    (f"repeated by {r['via'] or 'an untraced digi'}" if r["echo"] else f"beacon of {r['via']}"),
+                    f"RSSI {r['rssi']:g} dBm" if r["rssi"] is not None else "",
+                    f"SNR {r['snr']:g} dB" if r["snr"] is not None else "") if x)}),
     "nodecfg": ("node_config_log", lambda r: {
         "level": r["result"], "tag": f"{r['login']} > {r['callsign']}" if r["login"] else r["callsign"],
         "text": f"{r['command']}  =>  {r['detail']}", "note": ""}),

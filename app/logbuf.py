@@ -4,6 +4,7 @@ Two buffers live only in memory and start empty after a restart:
   * APRS: every line to and from APRS-IS, on both the read-only feed connection
     and the remote-config sending connection.
   * APP: this app's own Python log records.
+  * DEVICES: device log uploads and related actions (keys, notes, re-matching).
 
 Entries are {id, ts, level, tag, text, note}; ids increase, so the page can
 ask for everything after the last id it has. `epoch` changes on every restart,
@@ -51,6 +52,7 @@ class RingLog:
 
 APRS = RingLog(5000)
 APP = RingLog(2000)
+DEVICES = RingLog(2000)
 
 
 class _Handler(logging.Handler):

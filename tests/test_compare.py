@@ -74,7 +74,7 @@ def test_keys_and_upload_auth(client):
     assert r.status_code == 200 and r.json()["accepted"] == 1
     # retry is harmless
     r = anon.post("/api/devicelog", json=body, headers={"Authorization": f"Bearer {key}"})
-    assert r.json() == {"accepted": 0, "duplicates": 1, "ignored": 0, "errors": []}
+    assert r.json() == {"accepted": 0, "duplicates": 1, "ignored": 0, "errors": [], "tx": 0, "heard": 0}
     assert client.get("/api/account/keys").json()[0]["last_used"] is not None
     assert client.delete(f"/api/account/keys/{keys[0]['id']}", headers=H).status_code == 200
     assert anon.post("/api/devicelog", json=body, headers={"Authorization": f"Bearer {key}"}).status_code == 401
@@ -213,3 +213,34 @@ def test_events(client):
     assert [e["text"] for e in d["events"]] == ["swapped antenna"]
     assert client.post("/api/events", json={"device": "NOPE", "ts": T, "text": "x"}, headers=H).status_code == 404
     assert client.delete(f"/api/events/{d['events'][0]['id']}", headers=H).status_code == 200
+
+
+def test_admin_logs_list_device_actions(client):
+    from app import logbuf
+    logbuf.DEVICES._buf.clear()  # the ring outlives each test's app
+    register(client)
+    key = key_for(client)
+    anon = other(client)
+    auth = {"Authorization": f"Bearer {key}"}
+    client.ingester.handle_line(is_line(1), now=T + 2)
+    anon.post("/api/devicelog", headers=auth, json={"device": "K7ABC-9", "app": "test/1", "entries": [
+        {"type": "tx", "ts": T, "packet": tx_line(1)},
+        {"type": "rx", "ts": T + 3, "packet": tx_line(1, path="SQB*,WIDE1*"), "rssi": -97, "snr": 6.5},
+        {"type": "bogus", "ts": T}]})
+    anon.post("/api/devicelog", headers={"Authorization": "Bearer acv_nope"}, json={"device": "K7ABC-9", "entries": []})
+    anon.post("/api/devicelog", headers=auth, json={"device": "N0PE-9", "entries": []})
+    client.post("/api/events", json={"device": "SQB", "ts": T, "text": "swapped antenna"}, headers=H)
+    lines = [(e["level"], e["tag"], e["text"], e["note"])
+             for e in client.get("/api/admin/logs/devices").json()["entries"]]
+    assert lines[0][0] == "key" and "created upload key" in lines[0][2]
+    up = next(x for x in lines if x[0] == "upload")
+    assert up[1] == "admin K7ABC-9" and "2 new" in up[2] and "1 of 1 new transmissions heard" in up[2]
+    assert up[3].startswith("test/1 | #2: type must be")
+    refused = [x for x in lines if x[0] == "refused"]
+    assert "unknown or revoked key acv_nope" in refused[0][2] and "N0PE-9 is not an approved device" in refused[1][2]
+    assert lines[-1][0] == "note" and "swapped antenna" in lines[-1][2]
+    stored = client.get("/api/admin/logs/devicelog").json()["entries"]
+    assert [e["level"] for e in stored] == ["tx", "rx"]
+    assert stored[0]["note"].startswith("heard on APRS-IS")
+    assert stored[1]["note"] == "repeated by SQB, RSSI -97 dBm, SNR 6.5 dB"
+    assert logbuf.DEVICES.since(None, 1)  # in-memory ring

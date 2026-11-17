@@ -154,6 +154,7 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
         "SELECT callsign FROM stations WHERE kind != 'mobile' AND status='approved'")}
     res = {"accepted": 0, "duplicates": 0, "ignored": 0, "errors": []}
     tx_span = [None, None]
+    tx_ids: list[int] = []
 
     def err(i, msg):
         res["errors"].append({"index": i, "error": msg})
@@ -203,13 +204,15 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
             else:
                 res["ignored"] += 1  # other stations' traffic isn't kept
                 continue
-            n = c.execute(
+            cur = c.execute(
                 "INSERT OR IGNORE INTO device_log(device, kind, ts, packet, info, is_pos, lat, lon, echo, via, "
                 "rssi, snr, user_id, uploaded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (device, t, ts, line, p["info"], int(is_pos), p["lat"] if is_pos else None,
                  p["lon"] if is_pos else None, echo, via, _number(e.get("rssi"), -200, 50),
-                 _number(e.get("snr"), -50, 50), user["id"], now)).rowcount
+                 _number(e.get("snr"), -50, 50), user["id"], now))
+            n = cur.rowcount
             if n and t == "tx" and is_pos:
+                tx_ids.append(cur.lastrowid)
                 tx_span = [min(ts, tx_span[0] or ts), max(ts, tx_span[1] or ts)]
         else:
             err(i, "type must be tx, rx or event")
@@ -217,6 +220,12 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
         res["accepted" if n else "duplicates"] += 1
     if tx_span[0] is not None:
         match(c, device, tx_span[0] - MATCH_AFTER_S - MATCH_BEFORE_S, tx_span[1] + MATCH_AFTER_S + MATCH_BEFORE_S)
+    # New position transmissions in this batch, and how many were heard on APRS-IS
+    # so far (more can match later, once their packets arrive).
+    res["tx"] = len(tx_ids)
+    res["heard"] = sum(c.execute(f"SELECT COUNT(*) FROM device_log WHERE txid IS NOT NULL AND id IN "
+                                 f"({','.join('?' * len(chunk))})", chunk).fetchone()[0]
+                       for chunk in (tx_ids[i:i + 500] for i in range(0, len(tx_ids), 500)))
     res["errors"] = res["errors"][:20]
     return res
 

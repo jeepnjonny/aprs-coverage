@@ -966,7 +966,7 @@
   // 2 s while the tab is open and not paused, and re-renders the filtered view.
   const LG_PREFS = 'acov.logs.prefs';
   const LG_CHECKS = ['lg-regex', 'lg-case', 'lg-wrap', 'lg-utc'];
-  const LEVEL_CLASS = { rx: 'lv-rx', tx: 'lv-tx', srv: 'lv-srv', sys: 'lv-sys', WARNING: 'lv-warn', ERROR: 'lv-err', CRITICAL: 'lv-err' };
+  const LEVEL_CLASS = { rx: 'lv-rx', tx: 'lv-tx', srv: 'lv-srv', sys: 'lv-sys', WARNING: 'lv-warn', refused: 'lv-warn', ERROR: 'lv-err', CRITICAL: 'lv-err' };
   const lg = { sources: [], source: null, entries: [], visible: [], epoch: null, lastId: null,
     live: true, timer: null, loading: false, re: null, reErr: '' };
 

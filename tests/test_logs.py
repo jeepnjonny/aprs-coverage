@@ -28,7 +28,7 @@ def test_log_api(client):  # noqa: F811
     assert client.get("/api/admin/logs").status_code == 401
     login(client)
     ids = [s["id"] for s in client.get("/api/admin/logs").json()]
-    assert ids == ["aprs", "app", "packets", "rejects", "nodecfg"]
+    assert ids == ["aprs", "app", "packets", "rejects", "nodecfg", "devices", "devicelog"]
     assert client.get("/api/admin/logs/nope").status_code == 404
 
     # ring buffers
