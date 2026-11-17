@@ -377,3 +377,19 @@ def test_reliability_uses_logs_and_station_filter(client):
     assert (d["sent"], d["heard"], d["exact"]) == (10, 7, 10)  # logged: no double counting of heard packets
     only = client.get("/api/reliability", params={"start": T - 10, "end": T + 3600, "heard_by": "KJ7NYE-10"}).json()
     assert (only["sent"], only["heard"]) == (10, 3)  # what KJ7NYE-10 alone would have covered
+
+
+def test_reliability_same_second_packets(client):
+    """Two packets from one mobile stored in the same second at different
+    places (a digi's delayed copy next to a fresh beacon) used to divide by zero."""
+    register(client)
+    ing = client.ingester
+    for i in range(8):
+        ing.handle_line(f"K7ABC-7>APLRT1,WIDE1-1,qAR,KG7KMV-13:{_pos(43.6, -116.5 + i * 0.0124)}b{i}", now=T + i * 60)
+    with db.session() as c:  # the ingester's speed check would reject it, so store it directly
+        c.execute("INSERT INTO packets(ts,mobile,lat,lon,igate,heard_by,hops,chain,raw) "
+                  "VALUES(?,?,?,?,?,?,?,?,?)", (T + 7 * 60, "K7ABC-7", 43.6, -116.5 + 2 * 0.0124, "KG7KMV-13",
+                                                "SQB", 1, " SQB KG7KMV-13 ", "K7ABC-7>APLRT1,SQB*:late"))
+        c.execute("UPDATE packets SET txid=id WHERE txid IS NULL")
+    r = client.get("/api/reliability", params={"start": T - 10, "end": T + 3600})
+    assert r.status_code == 200 and r.json()["sent"] == 9

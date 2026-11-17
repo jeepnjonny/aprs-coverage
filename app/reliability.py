@@ -97,7 +97,9 @@ def reliability(c, start: int, end: int, cell_m: int, mobiles: list[str] | None,
                 continue
             p = hs[i - 1]
             gap = h["ts"] - p["ts"]
-            if gap > MAX_GAP_S:
+            # gap 0: two packets stored the same second (a digi's late copy of an
+            # older beacon next to a fresh one); nothing to estimate between them
+            if gap <= 0 or gap > MAX_GAP_S:
                 continue
             km = approx_km(p["lat"], p["lon"], h["lat"], h["lon"])
             if km < MIN_MOVE_KM or km / (gap / 3600) < MIN_SPEED_KMH:
