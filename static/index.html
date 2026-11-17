@@ -59,7 +59,13 @@
         <input type="color" id="single-color" value="#2f81f7">
       </label>
 
+      <p class="hint muted" id="single-red" hidden>Red is kept for lost beacons; the map uses blue instead.</p>
+
       <label class="check"><input type="checkbox" id="shade" checked> Shade by packet count (signal strength)</label>
+      <label class="check"><input type="checkbox" id="show-fails"> Outline squares with lost beacons (red)</label>
+      <p class="hint muted">From trackers that upload what they send through the LoRa FieldOps app: a red frame
+        where beacons were sent but never reached APRS-IS, stronger with more lost. Squares those trackers
+        didn't visit show nothing either way.</p>
 
       <label class="field">Square size
         <select id="cell"></select>

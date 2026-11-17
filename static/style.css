@@ -140,6 +140,12 @@ table.stats tbody tr.clickable:hover { background: color-mix(in srgb, var(--acce
 .legend .scale div { text-align: center; color: var(--muted); font-size: 10px; }
 .legend .scale span { display: block; width: 24px; height: 16px; border-radius: 3px; margin: 0 auto 2px; }
 
+/* lost beacons: red outline (red is reserved for this; no station is drawn red) */
+.legend .scale span.fail-box { box-sizing: border-box; border: 2px solid #d1242f; background: transparent; }
+.cell-tip .tip-fail { margin-top: 4px; }
+.cell-tip .fail-swatch { display: inline-block; width: 10px; height: 10px; border: 2px solid #d1242f; border-radius: 2px;
+  margin-right: 5px; vertical-align: -1px; }
+
 /* square and station tooltips */
 .leaflet-tooltip.cell-tip, .leaflet-tooltip.station-tip {
   font-size: 12px; line-height: 1.35; padding: 6px 8px; min-width: 170px; max-width: 280px; white-space: normal;

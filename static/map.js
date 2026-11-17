@@ -2,9 +2,13 @@
 (() => {
   'use strict';
 
-  // Hues kept well apart so no two read as "the same colour" on the map.
-  const PALETTE = ['#2f81f7', '#e5534b', '#2da44e', '#f2d024', '#8250df', '#e85aad',
+  // Hues kept well apart so no two read as "the same colour" on the map. No
+  // reds: red is reserved for the outline of squares where beacons were lost.
+  const PALETTE = ['#2f81f7', '#2da44e', '#f2d024', '#8250df', '#e85aad',
                    '#1fb6c9', '#f0883e', '#8b5a2b', '#1f3a93', '#9acd32', '#4b0082'];
+  const FAIL_RED = '#d1242f';
+  // [min lost beacons, outline opacity, outline width, legend label]
+  const FAIL_STEPS = [[12, 1.0, 3, '12+'], [5, 0.85, 2.5, '5–11'], [2, 0.65, 2, '2–4'], [1, 0.45, 1.5, '1']];
   const SHADE = [[31, 1.0, '31+'], [12, 0.82, '12–30'], [5, 0.64, '5–11'], [2, 0.45, '2–4'], [1, 0.28, '1']];
   const UNTRACED = '__untraced__', OTHER = '__other__';
   const $ = id => document.getElementById(id);
@@ -15,6 +19,7 @@
     shade: true, cell: 1000, opacity: 60, borders: true, stations: true, live: true, me: false, follow: false,
     basemap: 'osm', match: 'first', mobiles: null, heard: null,   // null = all selected
     hw: null, hwScope: 'both',                                    // hardware filter; null = all
+    fails: false,                                                 // red outline where beacons were lost
   };
   let S = { ...DEFAULTS };
   try { Object.assign(S, JSON.parse(localStorage.getItem('acov-ui') || '{}')); } catch {}
@@ -60,7 +65,7 @@
   const meRenderer = L.svg({ pane: 'me' });
 
   // ── data ──────────────────────────────────────────────────────────────────
-  let CFG = null, STATIONS = [], MOBILES = [], COVERAGE = null;
+  let CFG = null, STATIONS = [], MOBILES = [], COVERAGE = null, FAILS = null;
   const infraCalls = () => STATIONS.filter(s => s.kind !== 'mobile').map(s => s.callsign);
 
   async function getJSON(url) {
@@ -105,6 +110,20 @@
   // the rest take palette entries in callsign order, skipping any too close to a
   // colour an admin chose. Past the palette, golden-angle hues keep them apart.
   const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  // Same test as is_reddish() on the server. A stored red (set before red was
+  // reserved) is treated as no colour, so the station gets a palette colour.
+  function isReddish(hex) {
+    if (!/^#[0-9a-f]{6}$/i.test(hex || '')) return false;
+    const [r, g, b] = rgb(hex).map(v => v / 255);
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, d = mx - mn;
+    if (!d) return false;
+    const sat = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    let h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h = (h * 60 + 360) % 360;
+    return (h >= 340 || h <= 18) && sat >= 0.35 && l >= 0.2 && l <= 0.8;
+  }
+  const ownColor = s => (s && s.color && !isReddish(s.color) ? s.color : null);
+  const singleColor = () => (isReddish(S.singleColor) ? DEFAULTS.singleColor : S.singleColor);
   const near = (a, b) => { const [p, q] = [rgb(a), rgb(b)]; return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) < 60; };
   let colorCache = { src: null, map: new Map() };
   function infraColors() {
@@ -112,16 +131,19 @@
     const out = new Map(), used = [];
     const infra = STATIONS.filter(s => s.kind !== 'mobile')
       .sort((a, b) => a.callsign.localeCompare(b.callsign));
-    for (const s of infra) if (s.color) { out.set(s.callsign, s.color); used.push(s.color); }
+    for (const s of infra) if (ownColor(s)) { out.set(s.callsign, s.color); used.push(s.color); }
     let pi = 0, extra = 0;
     for (const s of infra) {
-      if (s.color) continue;
+      if (ownColor(s)) continue;
       let c = null;
       while (pi < PALETTE.length && !c) {
         const cand = PALETTE[pi++];
         if (!used.some(u => near(u, cand))) c = cand;
       }
-      if (!c) c = `hsl(${Math.round((extra++ * 137.508) % 360)}, 65%, 45%)`;
+      while (!c) {  // golden-angle hues, skipping the reserved reds
+        const hue = Math.round((extra++ * 137.508) % 360);
+        if (hue > 25 && hue < 330) c = `hsl(${hue}, 65%, 45%)`;
+      }
       out.set(s.callsign, c);
     }
     colorCache = { src: STATIONS, map: out };
@@ -130,7 +152,7 @@
   function keyColor(key) {
     if (key === '(untraced)') return '#8b949e';
     const st = findStation(key);  // wildcard / object registrations keep their colour
-    if (st && st.color) return st.color;
+    if (ownColor(st)) return st.color;
     if (st && st.kind !== 'mobile') return infraColors().get(st.callsign) || hashColor(key);
     return hashColor(key);
   }
@@ -216,14 +238,22 @@
     return html;
   }
 
-  function cellTip(n, first, last, heard, mobs) {
-    const size = COVERAGE.cell_m >= 1000 ? `${COVERAGE.cell_m / 1000} km` : `${COVERAGE.cell_m} m`;
+  const sizeText = m => m >= 1000 ? `${m / 1000} km` : `${m} m`;
+  function cellTip(n, first, last, heard, mobs, fail) {
+    const lost = fail ? failTip(fail) : '';
+    if (!n) return `<div class="tip-top"><b>No packets heard</b> <span class="muted">· ${sizeText(COVERAGE.cell_m)} square</span></div>${lost}`;
     return `<div class="tip-top"><b>${n.toLocaleString()} packet${n === 1 ? '' : 's'}</b>
-        <span class="muted">· ${size} square</span></div>
-      <div class="muted">First ${ago(first)} · last ${ago(last)}</div>`
+        <span class="muted">· ${sizeText(COVERAGE.cell_m)} square</span></div>
+      <div class="muted">First ${ago(first)} · last ${ago(last)}</div>${lost}`
       + tipList('Heard by', heard, true)
       + tipList('Mobiles', mobs, false);
   }
+  function failTip([failed, sent, lastFail]) {
+    return `<div class="tip-fail"><span class="fail-swatch"></span><b>${failed.toLocaleString()} of ${sent.toLocaleString()}</b>
+      logged beacon${sent === 1 ? '' : 's'} from here never reached APRS-IS
+      <div class="muted">Last lost ${ago(lastFail)}</div></div>`;
+  }
+  const failStep = n => FAIL_STEPS.find(([min]) => n >= min) || FAIL_STEPS[FAIL_STEPS.length - 1];
 
   function renderCells() {
     cellLayer.clearLayers();
@@ -231,8 +261,9 @@
     const { dlat, dlon, cells } = COVERAGE;
     const op = S.opacity / 100;
     const seenKeys = new Map();
+    const fails = S.fails && FAILS && FAILS.cell_m === COVERAGE.cell_m ? FAILS.byKey : null;
     for (const [x, y, n, last, by, heard, mobs, first] of cells) {
-      let color = S.singleColor, dominant = null;
+      let color = singleColor(), dominant = null;
       const entries = Object.entries(by).sort((a, b) => b[1] - a[1]);
       if (S.color !== 'single' && entries.length) {
         dominant = entries[0][0];
@@ -247,15 +278,36 @@
       rect.bindTooltip(() => cellTip(n, first, last, heard, mobs), { className: 'cell-tip', sticky: true });
       cellLayer.addLayer(rect);
     }
+    // Lost beacons: a red outline only, drawn over the reception colour so it
+    // doesn't change it. Redder and thicker with more lost beacons. Its
+    // tooltip covers the square's reception too, since it sits on top.
+    if (fails) {
+      const byCell = new Map(cells.map(c => [`${c[0]},${c[1]}`, c]));
+      for (const [key, f] of fails) {
+        const [x, y] = key.split(',').map(Number);
+        const [, opacity, weight] = failStep(f[0]);
+        const cell = byCell.get(key);
+        // Inset a little so neighbouring frames stay separate instead of merging into a grid.
+        const ix = dlon * 0.06, iy = dlat * 0.06;
+        const rect = L.rectangle([[y * dlat + iy, x * dlon + ix], [(y + 1) * dlat - iy, (x + 1) * dlon - ix]], {
+          renderer: cellRenderer, color: FAIL_RED, weight, opacity, fill: true, fillOpacity: 0,
+        });
+        rect.bindTooltip(() => cell ? cellTip(cell[2], cell[7], cell[3], cell[5], cell[6], f) : cellTip(0, 0, 0, {}, {}, f),
+          { className: 'cell-tip', sticky: true });
+        cellLayer.addLayer(rect);
+      }
+    }
     renderLegend(seenKeys);
     const { packets } = COVERAGE;
-    $('summary').textContent = `${cells.length.toLocaleString()} squares · ${packets.toLocaleString()} packets`;
+    $('summary').textContent = `${cells.length.toLocaleString()} squares · ${packets.toLocaleString()} packets`
+      + (fails ? ` · ${FAILS.failed.toLocaleString()} lost beacon${FAILS.failed === 1 ? '' : 's'}` : '');
   }
 
   function renderLegend(keys) {
     const el = $('legend');
-    if (!COVERAGE || !COVERAGE.cells.length) { el.hidden = true; return; }
-    const base = S.color === 'single' ? S.singleColor : 'var(--muted)';
+    const hasFails = S.fails && FAILS && FAILS.cells.length;
+    if (!COVERAGE || (!COVERAGE.cells.length && !hasFails)) { el.hidden = true; return; }
+    const base = S.color === 'single' ? singleColor() : 'var(--muted)';
     let html = '';
     if (S.shade) {
       html += `<h3>Packets per square</h3><div class="scale">` +
@@ -266,6 +318,11 @@
       html += `<h3>${S.color === 'heard_by' ? 'Heard by' : 'Mobile'}</h3>` +
         [...keys.entries()].sort((a, b) => b[1] - a[1]).map(([k]) =>
           `<div class="row"><span class="swatch" style="background:${keyColor(k)}"></span>${nameHtml(k)}</div>`).join('');
+    }
+    if (hasFails) {
+      html += `<h3>Lost beacons per square</h3><div class="scale">` +
+        [...FAIL_STEPS].reverse().map(([, o, w, label]) =>
+          `<div><span class="fail-box" style="border-width:${w}px;opacity:${o}"></span>${label}</div>`).join('') + '</div>';
     }
     el.innerHTML = html;
     el.hidden = !html;
@@ -397,9 +454,13 @@
   async function refresh() {
     const seq = ++loadSeq;
     try {
-      const cov = await getJSON('api/coverage?' + queryParams());
+      const [cov, fails] = await Promise.all([
+        getJSON('api/coverage?' + queryParams()),
+        S.fails ? getJSON('api/failures?' + queryParams(false)).catch(() => null) : null,
+      ]);
       if (seq !== loadSeq) return;  // a newer request superseded this one
       COVERAGE = cov;
+      FAILS = fails && { ...fails, byKey: new Map(fails.cells.map(c => [`${c[0]},${c[1]}`, c.slice(2)])) };
       renderCells();
     } catch (e) {
       $('summary').textContent = 'Failed to load coverage: ' + e.message;
@@ -503,6 +564,7 @@
   function syncVisibility() {
     $('custom-range').hidden = S.preset !== 'custom';
     $('single-color-row').hidden = S.color !== 'single';
+    $('single-red').hidden = S.color !== 'single' || !isReddish(S.singleColor);
     $('opacity-val').textContent = S.opacity + '%';
   }
 
@@ -514,7 +576,8 @@
     if (![...$('preset').options].some(o => o.value === S.preset)) S.preset = DEFAULTS.preset;  // e.g. a removed preset
     bind('preset', 'preset', { after: () => { syncVisibility(); if (S.preset !== 'custom') refresh(); } });
     bind('color-mode', 'color', { after: () => { syncVisibility(); buildFilters(); refresh(); } });
-    bind('single-color', 'singleColor', { after: renderCells });
+    bind('single-color', 'singleColor', { after: () => { syncVisibility(); renderCells(); } });
+    bind('show-fails', 'fails', { prop: 'checked' });
     bind('shade', 'shade', { prop: 'checked', after: renderCells });
     bind('cell', 'cell', { parse: v => parseInt(v, 10) });
     bind('opacity', 'opacity', { parse: v => parseInt(v, 10), after: () => { syncVisibility(); renderCells(); } });

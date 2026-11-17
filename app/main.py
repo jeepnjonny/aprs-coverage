@@ -1,5 +1,6 @@
 """FastAPI app: public map API, live feed, admin API, static pages."""
 import asyncio
+import colorsys
 import json
 import logging
 import math
@@ -256,6 +257,42 @@ def api_coverage(
         "packets": total,
         # [x, y, count, last_ts, {color key: count}, {heard_by: count}, {mobile: count}, first_ts]
         "cells": list(cells.values()),
+    }
+
+
+@app.get("/api/failures")
+def api_failures(
+    start: int | None = None,
+    end: int | None = None,
+    cell: int = 1000,
+    mobiles: str | None = None,
+):
+    """Squares with beacons a tracker logged sending (uploaded transmit logs)
+    that never reached APRS-IS. Only from trackers that upload a log; squares
+    no such tracker visited say nothing either way. Beacons sent in the last
+    couple of minutes are left out until their packets have had time to arrive."""
+    start, end = _time_range(start, end)
+    cell = _cell_size(cell)
+    cx, cy = grid.sql_cell_exprs(cell)
+    settled = int(time.time()) - devicelog.MATCH_AFTER_S - 30
+    clauses, args = ["kind='tx'", "is_pos=1", "ts >= ?", "ts <= ?"], [start, end]
+    mob = _csv(mobiles)
+    if mob is not None:
+        clauses.append(f"device IN ({','.join('?' * len(mob))})" if mob else "0")
+        args += mob
+    where = " AND ".join(clauses)
+    with db.session() as c:
+        rows = c.execute(
+            f"SELECT {cx} AS x, {cy} AS y, SUM(txid IS NULL AND ts <= ?) AS failed, "
+            f"SUM(txid IS NOT NULL OR ts <= ?) AS sent, MAX(CASE WHEN txid IS NULL THEN ts END) AS last "
+            f"FROM device_log WHERE {where} GROUP BY x, y HAVING failed > 0",
+            [settled, settled, *args]).fetchall()
+    dlat, dlon = grid.cell_deg(cell)
+    return {
+        "cell_m": cell, "dlat": dlat, "dlon": dlon, "start": start, "end": end,
+        "failed": sum(r["failed"] for r in rows),
+        # [x, y, failed, logged, last failed ts]
+        "cells": [[r["x"], r["y"], r["failed"], r["sent"], r["last"]] for r in rows],
     }
 
 
@@ -519,6 +556,15 @@ MOBILE_RE = re.compile(r"^[A-Z0-9]{1,6}(-[A-Z0-9]{1,2}|-\*|\*)?$")
 # are up to 9 characters; spaces are not allowed here (trailing pad is stripped).
 OBJECT_RE = re.compile(r"^[A-Z0-9]{1,6}(-[A-Z0-9]{1,2}|-\*|\*)?:[A-Z0-9_./#*-]{1,9}$")
 COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def is_reddish(color: str) -> bool:
+    """Red is reserved on the map for the outline of squares where beacons were
+    lost, so no station may be drawn red. Same test as isReddish() in map.js."""
+    r, g, b = (int(color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    h, lum, sat = colorsys.rgb_to_hls(r, g, b)
+    hue = h * 360
+    return (hue >= 340 or hue <= 18) and sat >= 0.35 and 0.2 <= lum <= 0.8
 # Device hardware, for the dropdown and the map's filter: the boards the LoRa
 # FieldOps firmware builds for (KJ7NYE/LoRa_FieldOps_APRS_Tracker), then "other".
 # Keys are stored, so keep them stable; labels can change freely.
@@ -567,6 +613,8 @@ class StationIn(BaseModel):
             return None
         if not COLOR_RE.match(v):
             raise ValueError("color must be #rrggbb")
+        if is_reddish(v):
+            raise ValueError("red is reserved on the map for squares where beacons were lost; pick another color")
         return v.lower()
 
     @field_validator("hardware")

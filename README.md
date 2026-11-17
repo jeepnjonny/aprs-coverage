@@ -38,6 +38,10 @@ where the local igates and digipeaters can actually hear a mobile.
   - Square size from 100 m to 2 km, adjustable overlay opacity
   - Color squares by igate/digi, by reporting mobile, or one color for overall coverage
   - Shade squares by packet count as a rough measure of signal strength
+  - Outline squares with lost beacons (option): a red frame where a tracker that uploads its
+    transmit log sent beacons that never reached APRS-IS, thicker and stronger with more lost.
+    It sits on top of the reception colour without changing it. Red is reserved for this: no
+    igate, digi or mobile can be given a red colour, and the automatic colours skip red.
   - Filter by mobile, by igate/digi, and by device hardware (Heltec T114, LoRanger V2, …), applied to
     mobiles, igates/digis or both
   - Time presets (15 minutes to 12 months, or all time) or a custom range whose end can be "now"

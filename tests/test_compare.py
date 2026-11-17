@@ -244,3 +244,36 @@ def test_admin_logs_list_device_actions(client):
     assert stored[0]["note"].startswith("heard on APRS-IS")
     assert stored[1]["note"] == "repeated by SQB, RSSI -97 dBm, SNR 6.5 dB"
     assert logbuf.DEVICES.since(None, 1)  # in-memory ring
+
+
+def test_failures_map_layer(client):
+    register(client)
+    ing = client.ingester
+    # 5 beacons logged from one spot, 2 heard
+    for i in (0, 3):
+        ing.handle_line(is_line(i), now=T + i * 60 + 2)
+    key = key_for(client)
+    client.post("/api/devicelog", headers={"Authorization": f"Bearer {key}"}, json={
+        "device": "K7ABC-9", "entries": [{"type": "tx", "ts": T + i * 60, "packet": tx_line(i)} for i in range(5)]})
+    d = client.get("/api/failures", params={"start": T - 10, "end": T + 3600, "cell": 1000}).json()
+    assert d["failed"] == 3 and len(d["cells"]) == 1
+    x, y, failed, sent, last = d["cells"][0]
+    assert (failed, sent, last) == (3, 5, T + 4 * 60)
+    cov = client.get("/api/coverage", params={"start": T - 10, "end": T + 3600, "cell": 1000}).json()
+    assert [c[:2] for c in cov["cells"]] == [[x, y]]  # same grid as the coverage squares
+    assert client.get("/api/failures", params={"start": T - 10, "end": T + 3600, "mobiles": "K7ABC-7"}).json()["cells"] == []
+    # a beacon just sent isn't counted as lost until its packet has had time to arrive
+    now = int(time.time())
+    client.post("/api/devicelog", headers={"Authorization": f"Bearer {key}"}, json={
+        "device": "K7ABC-9", "entries": [{"type": "tx", "ts": now, "packet": tx_line(99)}]})
+    assert client.get("/api/failures", params={"start": now - 10}).json()["cells"] == []
+
+
+def test_red_is_reserved_for_lost_beacons(client):
+    login(client)
+    for red in ("#ff0000", "#d1242f", "#e5534b"):
+        r = client.post("/api/admin/stations", json={"callsign": "K7RED-10", "kind": "igate", "color": red}, headers=H)
+        assert r.status_code == 422 and "reserved" in r.text
+    for ok in ("#f0883e", "#e85aad", "#2f81f7"):
+        r = client.post("/api/admin/stations", json={"callsign": f"K7OK{ok[1:3].upper()}", "kind": "igate", "color": ok}, headers=H)
+        assert r.status_code == 200, r.text
