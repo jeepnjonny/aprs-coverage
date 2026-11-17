@@ -275,6 +275,9 @@ only make mobile results exact.
   to a stored packet (same information field, received 30 s before to 90 s after the logged
   time; closest pairs first, each stored packet used once, so a parked tracker repeating itself
   doesn't fool it). Unmatched beacons were lost.
+- A logged beacon identical to a packet APRS-IS passed less than 30 s before it is not counted
+  either way: APRS-IS drops such repeats as duplicates however well they were heard. A parked
+  tracker beaconing faster than every 30 s repeats itself, so most of its beacons are left out.
 - *Estimated* otherwise: from gaps between packets heard, at a beacon interval you give or one
   estimated from the lower quartile of gaps. A gap over 15 minutes counts as parked, not lost.
   Rough with smart beaconing; a fixed rate makes it reliable.

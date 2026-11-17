@@ -298,3 +298,27 @@ def test_explain_unheard(client):
     ing.handle_line(f"K7ABC-9>APLRT1,WIDE1-1,qAR,KG7KMV-13:!4500.00N/11000.00W>far", now=T + 2000)
     with db.session() as c:
         assert "rejected as speed_jump" in devicelog.explain_unheard(c, "K7ABC-9", T + 1998, "x", now=T + 86400)
+
+
+def test_fast_identical_beacons_are_not_counted_lost(client):
+    """Parked, beaconing every 10 s: APRS-IS passes the first copy and drops
+    identical ones for 30 s, so those repeats are neither heard nor lost."""
+    register(client)
+    same = f"{POS}parked"
+    client.ingester.handle_line(f"K7ABC-9>APLRT1,WIDE1-1,qAR,KG7KMV-13:{same}", now=T + 2)
+    client.ingester.handle_line(f"K7ABC-9>APLRT1,WIDE1-1,qAR,KG7KMV-13:{same}", now=T + 42)
+    key = key_for(client)
+    client.post("/api/devicelog", headers={"Authorization": f"Bearer {key}"}, json={
+        "device": "K7ABC-9", "entries": [{"type": "tx", "ts": T + i * 10, "packet": f"K7ABC-9>APLRT1,WIDE1-1:{same}"}
+                                         for i in range(8)]})  # T .. T+70
+    with db.session() as c:
+        rows = [(r["ts"] - T, r["txid"] is not None, r["repeat_of"] is not None)
+                for r in c.execute("SELECT * FROM device_log ORDER BY ts")]
+    # T+0 and T+40 heard; T+10..30 and T+50..70 repeats of those (dropped by APRS-IS)
+    assert rows == [(0, True, False), (10, False, True), (20, False, True), (30, False, True),
+                    (40, True, False), (50, False, True), (60, False, True), (70, False, True)]
+    d = client.get("/api/compare/mobiles", params={"a": "K7ABC-9", "b": "K7ABC-7", "start": T - 10, "end": T + 3600}).json()
+    assert (d["a"]["total"]["sent"], d["a"]["total"]["heard"]) == (2, 2)
+    assert client.get("/api/failures", params={"start": T - 10, "end": T + 3600}).json()["cells"] == []
+    log = client.get("/api/admin/logs/devicelog").json()["entries"]
+    assert "dropped it as a duplicate" in log[1]["note"]

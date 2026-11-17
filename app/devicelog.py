@@ -24,6 +24,11 @@ MAX_FUTURE_S = 300                # clock slack for entries "from the future"
 # received this many seconds before/after it (phone and server clocks, digi and
 # igate delays).
 MATCH_BEFORE_S, MATCH_AFTER_S = 30, 90
+# APRS-IS servers drop a packet identical (same source and information field)
+# to one they passed within this many seconds. A tracker beaconing faster than
+# that from the same spot repeats itself, and those repeats never reach APRS-IS
+# however well they were heard, so they are left out of the counts.
+APRSIS_DUPE_S = 30
 REMATCH_WINDOW_S = 2 * 86400      # background re-matching looks this far back
 LORA_PREFIX = "<\xff\x01"
 
@@ -247,9 +252,11 @@ def match(c, device: str, start: int, end: int) -> int:
         "AND (ts < ? OR ts > ?) AND ts BETWEEN ? AND ?",
         (device, start, end, lo - MATCH_AFTER_S, hi + MATCH_BEFORE_S))}
     by_info: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    every: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for r in c.execute("SELECT txid, MIN(ts) AS ts, raw FROM packets WHERE mobile=? AND ts BETWEEN ? AND ? "
-                       "GROUP BY txid", (device, lo, hi)):
-        if r["txid"] not in claimed:
+                       "GROUP BY txid", (device, lo - APRSIS_DUPE_S, hi)):
+        every[info_of(r["raw"])].append((r["ts"], r["txid"]))
+        if r["txid"] not in claimed and r["ts"] >= lo:
             by_info[info_of(r["raw"])].append((r["ts"], r["txid"]))
     pairs = []
     for e in ents:
@@ -264,7 +271,16 @@ def match(c, device: str, start: int, end: int) -> int:
         if eid not in got and txid not in taken:
             got[eid] = txid
             taken.add(txid)
-    c.executemany("UPDATE device_log SET txid=? WHERE id=?", [(got.get(e["id"]), e["id"]) for e in ents])
+    # An unmatched beacon identical to a packet APRS-IS passed just before it
+    # (arriving up to 5 s after it was sent) would have been dropped as a duplicate.
+    repeat: dict[int, int] = {}
+    for e in ents:
+        if e["id"] not in got:
+            near = [txid for pts, txid in every.get(e["info"], ()) if -APRSIS_DUPE_S <= pts - e["ts"] <= 5]
+            if near:
+                repeat[e["id"]] = near[0]
+    c.executemany("UPDATE device_log SET txid=?, repeat_of=? WHERE id=?",
+                  [(got.get(e["id"]), repeat.get(e["id"]), e["id"]) for e in ents])
     return len(got)
 
 
@@ -313,6 +329,7 @@ def rematch_recent(c, now: int | None = None) -> int:
     now = now or int(time.time())
     n = 0
     for r in c.execute("SELECT device, MIN(ts) FROM device_log WHERE kind='tx' AND is_pos=1 AND txid IS NULL "
+                       "AND repeat_of IS NULL "
                        "AND ts >= ? GROUP BY device", (now - REMATCH_WINDOW_S,)).fetchall():
         n += match(c, r[0], r[1] - MATCH_AFTER_S - MATCH_BEFORE_S, now)
     return n

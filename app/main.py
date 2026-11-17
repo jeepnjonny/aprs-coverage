@@ -275,7 +275,7 @@ def api_failures(
     cell = _cell_size(cell)
     cx, cy = grid.sql_cell_exprs(cell)
     settled = int(time.time()) - devicelog.MATCH_AFTER_S - 30
-    clauses, args = ["kind='tx'", "is_pos=1", "ts >= ?", "ts <= ?"], [start, end]
+    clauses, args = ["kind='tx'", "is_pos=1", "repeat_of IS NULL", "ts >= ?", "ts <= ?"], [start, end]
     mob = _csv(mobiles)
     if mob is not None:
         clauses.append(f"device IN ({','.join('?' * len(mob))})" if mob else "0")
@@ -1372,6 +1372,8 @@ _DB_LOGS = {
     "devicelog": ("device_log", lambda r: {
         "level": r["kind"], "tag": r["device"], "text": r["packet"],
         "note": ("not a position" if not r["is_pos"] else f"heard on APRS-IS (tx {r['txid']})" if r["txid"]
+                 else f"not counted: identical to a packet APRS-IS passed under {devicelog.APRSIS_DUPE_S} s "
+                      f"before (tx {r['repeat_of']}), so APRS-IS dropped it as a duplicate" if r["repeat_of"]
                  else "not heard") if r["kind"] == "tx" else
                 ", ".join(x for x in (
                     (f"repeated by {r['via'] or 'an untraced digi'}" if r["echo"] else f"beacon of {r['via']}"),
@@ -1405,6 +1407,6 @@ def admin_log(source: str, after: int | None = Query(None, ge=0), limit: int = Q
         entries = [{"id": r["id"], "ts": r["ts"], **conv(r)} for r in rows]
         if source == "devicelog":  # say why each unheard transmission wasn't matched
             for e, r in zip(entries, rows):
-                if r["kind"] == "tx" and r["is_pos"] and not r["txid"]:
+                if r["kind"] == "tx" and r["is_pos"] and not r["txid"] and not r["repeat_of"]:
                     e["note"] = devicelog.explain_unheard(c, r["device"], r["ts"], r["info"])
     return {"epoch": 0, "entries": entries}

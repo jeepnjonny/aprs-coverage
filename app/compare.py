@@ -119,7 +119,7 @@ def _heard(c, mobile, start, end) -> list[dict]:
 def _txlog(c, mobile, start, end) -> list[dict]:
     return [dict(r) for r in c.execute(
         "SELECT id, ts, txid, lat, lon, info FROM device_log WHERE device=? AND kind='tx' AND is_pos=1 "
-        "AND ts BETWEEN ? AND ? ORDER BY ts", (mobile, start, end))]
+        "AND repeat_of IS NULL AND ts BETWEEN ? AND ? ORDER BY ts", (mobile, start, end))]
 
 
 def beacon_interval(heard: list[dict]) -> int | None:

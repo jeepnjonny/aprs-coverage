@@ -126,6 +126,8 @@ CREATE TABLE IF NOT EXISTS device_log (
     rssi        REAL,
     snr         REAL,
     txid        INTEGER,                       -- tx: the transmission it reached APRS-IS as; NULL = not heard
+    repeat_of   INTEGER,                       -- tx: an identical packet APRS-IS passed <30 s before, so it
+                                               --     dropped this one as a duplicate; not counted either way
     user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
     uploaded_at INTEGER NOT NULL,
     UNIQUE(device, kind, ts, packet)
@@ -204,6 +206,8 @@ def _migrate(c: sqlite3.Connection) -> None:
             c.execute("INSERT INTO users(username, pw_hash, role, status) VALUES('admin', ?, 'admin', 'active')",
                       (old["value"],))
         c.execute("DELETE FROM settings WHERE key='admin_password'")
+    if "repeat_of" not in {r["name"] for r in c.execute("PRAGMA table_info(device_log)")}:
+        c.execute("ALTER TABLE device_log ADD COLUMN repeat_of INTEGER")
     # Rows stored before duplicates were tracked are each their own transmission.
     c.execute("UPDATE packets SET txid = id WHERE txid IS NULL")
 
