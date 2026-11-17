@@ -78,6 +78,7 @@ def test_station_crud_and_coverage(client):
     stats = client.get("/api/stats", params=q).json()
     digi = next(r for r in stats["infra"] if r["callsign"] == "K7SWI-1")
     assert digi["heard_direct"] == 1 and digi["max_range_km"] is not None
+    assert len(digi["max_range_at"]) == 2
     igate = next(r for r in stats["infra"] if r["callsign"] == "KG7KMV-10")
     assert igate["gated"] == 2 and igate["heard_direct"] == 1
 

@@ -390,7 +390,7 @@
 
   const KIND_NAME = { igate: 'Igate', digi: 'Digipeater', digi_igate: 'Digi + igate' };
 
-  function stationCard(s, color) {
+  function stationCard(s, color, popup = false) {
     const st = (STATS && STATS.infra.find(r => r.callsign === s.callsign)) || null;
     const n = v => (v ?? 0).toLocaleString();
     const row = (k, v) => `<tr><th>${k}</th><td>${v}</td></tr>`;
@@ -405,7 +405,9 @@
       html += row('Heard direct', `${n(st.heard_direct)} packet${st.heard_direct === 1 ? '' : 's'}`)
         + row('Squares covered', n(st.cells))
         + row('Mobiles heard', n(st.mobiles))
-        + row('Max range', st.max_range_km != null ? `${st.max_range_km} km` : '—');
+        + row('Max range', st.max_range_km == null ? '—' : popup && st.max_range_at
+          ? `<span class="sc-maxrange" title="Hover or tap to show on the map">${st.max_range_km} km</span>`
+          : `${st.max_range_km} km`);
       if (s.kind !== 'digi') html += row('Gated to APRS-IS', n(st.gated));
     }
     html += row('Last heard a mobile', ago(s.last_heard))
@@ -427,9 +429,47 @@
       });
       // Built when shown, so it always reflects the latest stats and time range.
       m.bindTooltip(() => stationCard(s, color), { className: 'station-tip', direction: 'top', offset: [0, -8] });
-      m.bindPopup(() => stationCard(s, color));
+      m.bindPopup(() => stationCard(s, color, true));
+      m.on('popupopen', e => { m.closeTooltip(); wireMaxRange(e.popup.getElement(), s, color); });
+      m.on('popupclose', hideMaxRange);
       stationLayer.addLayer(m);
     }
+  }
+
+  // ── max-range highlight: a temporary line + marker to the farthest point heard ──
+  const MAX_RANGE_MS = 8000;  // how long a click/tap keeps it up
+  const maxRangeLayer = L.layerGroup().addTo(map);
+  let maxRangeTimer = null;
+
+  function hideMaxRange() {
+    clearTimeout(maxRangeTimer);
+    maxRangeTimer = null;
+    maxRangeLayer.clearLayers();
+  }
+
+  function showMaxRange(s, color, st) {
+    hideMaxRange();
+    const from = [s.lat, s.lon], to = st.max_range_at;
+    L.polyline([from, to], { renderer: stationRenderer, color, weight: 3, opacity: 0.9, dashArray: '6 5', interactive: false })
+      .addTo(maxRangeLayer);
+    L.circleMarker(to, { renderer: stationRenderer, radius: 6, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1, interactive: false })
+      .bindTooltip(`${st.max_range_km} km`, { permanent: true, direction: 'right', offset: [8, 0], className: 'cell-tip' })
+      .addTo(maxRangeLayer);
+  }
+
+  function wireMaxRange(root, s, color) {
+    const el = root && root.querySelector('.sc-maxrange');
+    if (!el) return;
+    // Read stats when used, in case they refreshed after the card was built.
+    const current = () => STATS && STATS.infra.find(r => r.callsign === s.callsign && r.max_range_at);
+    el.addEventListener('mouseenter', () => { const st = current(); if (st) showMaxRange(s, color, st); });
+    el.addEventListener('mouseleave', () => { if (!maxRangeTimer) hideMaxRange(); });
+    el.addEventListener('click', () => {
+      const st = current();
+      if (!st) return;
+      showMaxRange(s, color, st);
+      maxRangeTimer = setTimeout(hideMaxRange, MAX_RANGE_MS);
+    });
   }
 
   // ── filters UI ────────────────────────────────────────────────────────────

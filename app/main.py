@@ -351,27 +351,30 @@ def api_stats(
             call = s["callsign"]
             lat = s["lat"] if s["lat"] is not None else s["auto_lat"]
             lon = s["lon"] if s["lon"] is not None else s["auto_lon"]
-            max_km = None
+            max_km = max_at = None
             if lat is not None and lon is not None and call in direct:
                 kx = grid.M_PER_DEG_LON_EQ / 1000 * math.cos(math.radians(lat))
-                r = c.execute(
-                    f"SELECT MAX(((lat-?)*?)*((lat-?)*?) + ((lon-?)*?)*((lon-?)*?)) "
+                # SQLite returns the bare lat/lon columns from the row holding the MAX.
+                far = c.execute(
+                    f"SELECT MAX(((lat-?)*?)*((lat-?)*?) + ((lon-?)*?)*((lon-?)*?)) AS d2, lat, lon "
                     f"FROM packets WHERE {where} AND heard_by=?",
                     [lat, ky, lat, ky, lon, kx, lon, kx, *args, call],
-                ).fetchone()[0]
-                max_km = round(math.sqrt(r), 1) if r is not None else None
+                ).fetchone()
+                if far["d2"] is not None:
+                    max_km = round(math.sqrt(far["d2"]), 1)
+                    max_at = [far["lat"], far["lon"]]
             d = direct.pop(call, {})
             infra_rows.append({
                 "callsign": call, "kind": s["kind"], "label": s["label"], "registered": True,
                 "heard_direct": d.get("packets", 0), "cells": d.get("cells", 0),
                 "mobiles": d.get("mobiles", 0), "gated": gated.get(call, 0),
-                "max_range_km": max_km, "last_heard": d.get("last"),
+                "max_range_km": max_km, "max_range_at": max_at, "last_heard": d.get("last"),
             })
         for k, d in direct.items():  # unregistered first hops and untraced
             infra_rows.append({
                 "callsign": k, "kind": None, "label": "", "registered": False,
                 "heard_direct": d["packets"], "cells": d["cells"], "mobiles": d["mobiles"],
-                "gated": gated.get(k, 0), "max_range_km": None, "last_heard": d["last"],
+                "gated": gated.get(k, 0), "max_range_km": None, "max_range_at": None, "last_heard": d["last"],
             })
         infra_rows.sort(key=lambda r: (-r["heard_direct"], r["callsign"]))
 

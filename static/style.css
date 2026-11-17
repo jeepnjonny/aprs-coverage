@@ -165,7 +165,8 @@ table.stats tbody tr.clickable:hover { background: color-mix(in srgb, var(--acce
 .station-card .sc-label { margin-top: 1px; }
 .station-card .sc-range { font-size: 11px; margin: 4px 0 3px; }
 .station-card th { text-align: left; font-weight: normal; color: var(--muted); padding: 1px 12px 1px 0; white-space: nowrap; }
-.station-card td { text-align: right; font-variant-numeric: tabular-nums; padding: 1px 0; white-space: nowrap; }
+.station-card .sc-maxrange { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+.station-card td {text-align: right; font-variant-numeric: tabular-nums; padding: 1px 0; white-space: nowrap; }
 .pulse { animation: pulse 1.6s ease-out 3; }
 @keyframes pulse { 0% { stroke-width: 2; stroke-opacity: 1; } 100% { stroke-width: 18; stroke-opacity: 0; } }
 
