@@ -104,7 +104,9 @@
   $('logout').addEventListener('click', async () => {
     await api('POST', 'api/logout').catch(() => {});
     try { history.replaceState(null, '', location.pathname + location.search); } catch { /* ignore */ }
-    showLoggedOut();
+    // A fresh page, so nothing of this account (API keys shown once, user and
+    // station tables, logs) stays in memory or the DOM for the next person.
+    location.reload();
   });
 
   // ── device fields (sign-up and My devices) ────────────────────────────────
@@ -967,7 +969,7 @@
   const LG_PREFS = 'acov.logs.prefs';
   const LG_CHECKS = ['lg-regex', 'lg-case', 'lg-wrap', 'lg-utc'];
   const LEVEL_CLASS = { rx: 'lv-rx', tx: 'lv-tx', srv: 'lv-srv', sys: 'lv-sys', WARNING: 'lv-warn', refused: 'lv-warn', ERROR: 'lv-err', CRITICAL: 'lv-err' };
-  const lg = { sources: [], source: null, entries: [], visible: [], epoch: null, lastId: null,
+  const lg = { sources: [], source: null, entries: [], visible: [], epoch: null, lastId: null, gen: 0, again: false,
     live: true, timer: null, loading: false, re: null, reErr: '' };
 
   function lgSavePrefs() {
@@ -1001,7 +1003,7 @@
 
   async function switchSource() {
     lg.source = $('lg-source').value;
-    lg.entries = []; lg.lastId = null; lg.epoch = null;
+    lg.entries = []; lg.lastId = null; lg.epoch = null; lg.gen++;
     $('lg-desc').textContent = lg.sources.find(s => s.id === lg.source)?.description || '';
     $('lg-level').value = '';
     lgSavePrefs();
@@ -1010,15 +1012,15 @@
   }
 
   async function fetchLog() {
-    if (lg.loading) return;
+    if (lg.loading) { lg.again = true; return; }  // fetch once more when the current one ends
     lg.loading = true;
-    const src = lg.source;
+    const src = lg.source, gen = lg.gen;
     try {
       const max = +$('lg-limit').value;
       const q = lg.lastId == null ? `limit=${max}` : `after=${lg.lastId}&limit=5000`;
       const r = await api('GET', `api/admin/logs/${encodeURIComponent(src)}?${q}`);
       $('lg-err').textContent = '';
-      if (src !== lg.source) return;  // switched while loading
+      if (src !== lg.source || gen !== lg.gen) return;  // switched source or size while loading
       if (lg.epoch !== null && r.epoch !== lg.epoch) {
         // The server restarted and its in-memory log ids began again: start over.
         lg.entries = []; lg.lastId = null; lg.epoch = null;
@@ -1036,6 +1038,7 @@
       $('lg-err').textContent = `Could not load the log: ${e.message}`;
     } finally {
       lg.loading = false;
+      if (lg.again || gen !== lg.gen) { lg.again = false; fetchLog(); }
     }
   }
 

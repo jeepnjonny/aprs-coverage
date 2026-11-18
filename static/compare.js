@@ -14,17 +14,20 @@
   const isChange = () => $('mode').value === 'change';
   const isNode = call => STATIONS.some(s => s.kind !== 'mobile' && s.callsign === call);
 
+  // The server's error message: a string, or FastAPI's list of field errors (422).
+  const errText = (d, status) => typeof d.detail === 'string' ? d.detail
+    : Array.isArray(d.detail) ? d.detail.map(e => e.msg).join('; ') : `HTTP ${status}`;
   async function get(url) {
-    const r = await fetch(url, { headers: { 'X-Requested-With': 'fetch' } });
+    const r = await fetch(url);
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : `HTTP ${r.status}`);
+    if (!r.ok) throw new Error(errText(d, r.status));
     return d;
   }
   async function send(method, url, body) {
     const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' },
       body: body ? JSON.stringify(body) : undefined });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : `HTTP ${r.status}`);
+    if (!r.ok) throw new Error(errText(d, r.status));
     return d;
   }
 
@@ -86,7 +89,9 @@
     const el = $('change'), want = el.dataset.want ?? el.value;
     delete el.dataset.want;
     const station = $('station').value;
-    NOTES = station ? await get(`api/events?device=${encodeURIComponent(station)}`).catch(() => []) : [];
+    const notes = station ? await get(`api/events?device=${encodeURIComponent(station)}`).catch(() => []) : [];
+    if ($('station').value !== station) return;  // picked another station meanwhile; its call fills the list
+    NOTES = notes;
     const day = ts => new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
     el.innerHTML = NOTES.map(n => `<option value="n${n.id}">${esc(n.text)}, ${esc(day(n.ts))}</option>`).join('')
       + '<option value="date">Pick a date…</option>';
@@ -133,6 +138,7 @@
 
   async function load() {
     const mode = $('mode').value, a = $('a').value, b = $('b').value;
+    ++seq;  // whatever happens next, any request still in flight is stale
     writeUrl();
     if (mode === 'change') return loadChange();
     if (!a || !b) { status(mode === 'mobiles' ? 'No mobiles have been heard yet.' : 'Register two igates or digis first.'); return; }
@@ -156,10 +162,14 @@
   function status(text, isErr) {
     $('status').textContent = text;
     $('status').className = isErr ? 'error' : 'muted';
-    if (text && !text.startsWith('Loading')) { $('result').hidden = true; $('change-result').hidden = true; }
+    if (text && !text.startsWith('Loading')) {
+      $('result').hidden = true; $('change-result').hidden = true;
+      DATA = null;  // so a resize doesn't bring the hidden results back
+    }
   }
 
   async function loadChange() {
+    ++seq;
     const station = $('station').value;
     if (!station) { status('No stations have been heard yet.'); return; }
     const at = changeAt();
@@ -321,7 +331,9 @@
           : `<button class="link" data-change="${e.id}" data-device="${esc(e.device)}">Compare before and after</button>`}
         ${ME && (ME.role === 'admin' || ME.id === e.user_id) ? `<button class="link" data-del="${e.id}">delete</button>` : ''}</li>`).join('')
       : '<li class="muted">No notes in this period.</li>';
+    const keep = $('ev-device').value;  // a re-render (e.g. on resize) keeps the user's pick
     $('ev-device').innerHTML = devs.map(x => `<option>${esc(x)}</option>`).join('');
+    if (devs.includes(keep)) $('ev-device').value = keep;
     if (!$('ev-ts').value) {
       const n = new Date(); n.setMinutes(n.getMinutes() - n.getTimezoneOffset());
       $('ev-ts').value = n.toISOString().slice(0, 16);
@@ -542,6 +554,7 @@
       await send('POST', 'api/events', { device: $('ev-device').value, ts: Math.floor(Date.parse($('ev-ts').value) / 1000),
         text: $('ev-text').value.trim() });
       $('ev-text').value = ''; m.className = 'okmsg'; m.textContent = 'Added.';
+      if (isChange()) await fillChanges();  // the new note belongs in the "change" list
       load();
     } catch (err) { m.className = 'error'; m.textContent = err.message; }
   });
@@ -552,6 +565,10 @@
       $('station').dataset.want = c.dataset.device;
       $('change').dataset.want = `n${c.dataset.change}`;
       fillStations();
+      if ($('station').value !== c.dataset.device) {
+        status(`${c.dataset.device} isn't in the station list, so it can't be compared here.`, true);
+        return;
+      }
       await fillChanges();
       load();
       window.scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
@@ -559,7 +576,11 @@
     }
     const b = e.target.closest('[data-del]');
     if (!b) return;
-    try { await send('DELETE', `api/events/${b.dataset.del}`); load(); }
+    try {
+      await send('DELETE', `api/events/${b.dataset.del}`);
+      if (isChange()) await fillChanges();  // it may have been the change being compared
+      load();
+    }
     catch (err) { $('ev-msg').className = 'error'; $('ev-msg').textContent = err.message; }
   });
 

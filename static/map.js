@@ -84,7 +84,12 @@
 
   async function getJSON(url) {
     const r = await fetch(url, { cache: 'no-store' });
-    if (!r.ok) throw new Error(`${url}: ${r.status}`);
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      const msg = typeof d.detail === 'string' ? d.detail
+        : Array.isArray(d.detail) ? d.detail.map(e => e.msg).join('; ') : `HTTP ${r.status}`;
+      throw new Error(msg);
+    }
     return r.json();
   }
 
@@ -136,7 +141,7 @@
     h = (h * 60 + 360) % 360;
     return (h >= 340 || h <= 18) && sat >= 0.35 && l >= 0.2 && l <= 0.8;
   }
-  const ownColor = s => (s && s.color && !isReddish(s.color) ? s.color : null);
+  const ownColor = s => (s && /^#[0-9a-f]{6}$/i.test(s.color || '') && !isReddish(s.color) ? s.color : null);
   const singleColor = () => (isReddish(S.singleColor) ? DEFAULTS.singleColor : S.singleColor);
   const near = (a, b) => { const [p, q] = [rgb(a), rgb(b)]; return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) < 60; };
   let colorCache = { src: null, map: new Map() };
@@ -427,7 +432,8 @@
     if (!S.stations) return;
     for (const s of STATIONS) {
       if (s.kind === 'mobile' || s.lat == null) continue;
-      const color = s.color || infraColors().get(s.callsign) || hashColor(s.callsign);
+      // Same colour as its squares and legend entry (a stored red isn't used: red means lost beacons).
+      const color = ownColor(s) || infraColors().get(s.callsign) || hashColor(s.callsign);
       const m = L.circleMarker([s.lat, s.lon], {
         renderer: stationRenderer,
         radius: s.kind === 'digi' ? 6 : 8, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1,
@@ -549,9 +555,13 @@
     buildCheckList($('heard-list'), infra, S.heard, () => { S.heard = readNarrowed($('heard-list'), S.heard, allHeard()); save(); refresh(); });
   }
 
-  let STATS = null;
+  let STATS = null, statsSeq = 0;
   async function loadStats() {
-    try { STATS = await getJSON('api/stats?' + queryParams(false)); } catch { return; }
+    const seq = ++statsSeq;
+    let st;
+    try { st = await getJSON('api/stats?' + queryParams(false)); } catch { return; }
+    if (seq !== statsSeq) return;  // a newer filter's stats are on the way
+    STATS = st;
     const byCall = Object.fromEntries(STATIONS.map(s => [s.callsign, s]));
     const tb = $('infra-stats').querySelector('tbody');
     tb.innerHTML = STATS.infra.map(r => {
@@ -803,9 +813,13 @@
     }, 60000);
     setInterval(async () => {  // pick up station edits and marker positions
       try {
-        const before = STATIONS.map(s => s.callsign).join();
-        STATIONS = await getJSON('api/stations');
-        renderStations();
+        const fresh = await getJSON('api/stations');
+        // Redrawing the markers closes any open popup, so only redraw when
+        // something drawn changed (not just a "last heard" time).
+        const drawn = list => JSON.stringify(list.map(({ last_heard, last_beacon, ...rest }) => rest));
+        const before = STATIONS.map(s => s.callsign).join(), moved = drawn(fresh) !== drawn(STATIONS);
+        STATIONS = fresh;
+        if (moved) renderStations();
         if (STATIONS.map(s => s.callsign).join() !== before) { buildFilters(); refresh(); }
       } catch {}
     }, 300000);
