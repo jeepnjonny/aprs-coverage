@@ -8,7 +8,7 @@ import pytest
 
 from app import remotecfg
 from app.remotecfg import parse_reply, passcode, split_msgno
-from test_api import H, client, login  # noqa: F401  (fixture)
+from conftest import H, login
 
 NODE = "KJ7NYE-10"
 OP = "K7SWI-CF"  # operator's sending callsign
@@ -181,7 +181,7 @@ class FakeSender:
 
 
 @pytest.fixture()
-def node(client, monkeypatch):  # noqa: F811
+def node(client, monkeypatch):
     from app import config, main
     monkeypatch.setattr(config, "APRS_LOGIN", "K7SWI-CV")
     monkeypatch.setattr(remotecfg, "MIN_GAP_S", 0)
@@ -201,7 +201,7 @@ def post(c, kind, body, node=NODE):
     return c.post(f"/api/remote/{node}/{kind}", json={"login": OP, **body}, headers=H)
 
 
-def test_read_unlock_write_round_trip(client, node):  # noqa: F811
+def test_read_unlock_write_round_trip(client, node):
     r = post(client, "read", {}, NODE.lower())
     assert r.status_code == 200, r.text
     assert r.json()["type"] == "READ" and r.json()["fields"]["BR"] == "1800"
@@ -233,7 +233,7 @@ def test_read_unlock_write_round_trip(client, node):  # noqa: F811
     assert {e["login"] for e in log} == {OP}
 
 
-def test_log_limit_and_clear(client, node):  # noqa: F811
+def test_log_limit_and_clear(client, node):
     from app import db
     with db.session() as c:
         c.executemany("INSERT INTO node_config_log(ts, login, callsign, command, result, detail) VALUES(?,?,?,?,?,?)",
@@ -245,7 +245,7 @@ def test_log_limit_and_clear(client, node):  # noqa: F811
     assert client.get("/api/remote").json()["log"] == []
 
 
-def test_retry_until_acked(client, node):  # noqa: F811
+def test_retry_until_acked(client, node):
     node.drop = 1  # first transmission is lost
     r = post(client, "read", {"codes": ["BR"]})
     assert r.status_code == 200 and r.json()["fields"] == {"BR": "1800"}
@@ -253,7 +253,7 @@ def test_retry_until_acked(client, node):  # noqa: F811
     assert len(tx) == 2 and tx[0] == tx[1]  # same message number on the retry
 
 
-def test_errors(client, node):  # noqa: F811
+def test_errors(client, node):
     node.enabled = False  # node acks but never replies
     r = post(client, "read", {})
     assert r.status_code == 504 and "acked" in r.json()["detail"]
@@ -267,7 +267,7 @@ def test_errors(client, node):  # noqa: F811
     assert post(client, "write", {"fields": {"BR": 0}}).status_code == 422
 
 
-def test_sending_callsign_checks(client, node):  # noqa: F811
+def test_sending_callsign_checks(client, node):
     send = lambda call: client.post(f"/api/remote/{NODE}/read", json={"login": call}, headers=H)
     assert send("").status_code == 422
     assert send("NOTACALL").status_code == 422

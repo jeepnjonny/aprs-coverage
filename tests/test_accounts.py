@@ -3,7 +3,7 @@ import sqlite3
 
 from fastapi.testclient import TestClient
 
-from test_api import H, client, login  # noqa: F401  (fixture)
+from conftest import H, login
 
 PW = "a long enough password"
 

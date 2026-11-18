@@ -4,7 +4,7 @@ import sqlite3
 
 from app import packets
 from app.packets import RecentTx, Registry, evaluate, strip_dupe_prefix, tx_key
-from test_api import H, client, login  # noqa: F401  (fixture)
+from conftest import H, login
 
 T = 2_000_000_000
 INFO = ":=4336.66N/11612.40W>test"
@@ -52,7 +52,7 @@ def _register(client):
         assert client.post("/api/admin/stations", json=body, headers=H).status_code == 200
 
 
-def test_copies_count_once_per_station(client):  # noqa: F811
+def test_copies_count_once_per_station(client):
     _register(client)
     ing = client.ingester
     assert ing.handle_line(VIA_SQB, now=T) == "accept"
@@ -84,7 +84,7 @@ def test_copies_count_once_per_station(client):  # noqa: F811
     assert st["db"]["packets"] == 3 and st["db"]["dupes"] == 2
 
 
-def test_dupe_before_original_shares_txid(client):  # noqa: F811
+def test_dupe_before_original_shares_txid(client):
     _register(client)
     ing = client.ingester
     assert ing.handle_line(DIRECT_NYE, now=T, dupe=True) == "accept"
@@ -93,7 +93,7 @@ def test_dupe_before_original_shares_txid(client):  # noqa: F811
     assert client.get("/api/coverage", params=q).json()["packets"] == 1
 
 
-def test_feed_settings_api(client):  # noqa: F811
+def test_feed_settings_api(client):
     assert client.get("/api/admin/feeds").status_code == 401
     login(client)
     f = client.get("/api/admin/feeds").json()
@@ -133,7 +133,7 @@ def test_migrates_old_packets_table(tmp_path, monkeypatch):
     assert (row["txid"], row["dupe"]) == (row["id"], 0)
 
 
-def test_dupe_feed_connection(client, monkeypatch):  # noqa: F811
+def test_dupe_feed_connection(client, monkeypatch):
     """End to end over a socket: log in to a fake aprsc duplicates port and
     store the copy it sends."""
     _register(client)
@@ -177,7 +177,7 @@ def test_dupe_feed_connection(client, monkeypatch):  # noqa: F811
     assert infra["KJ7NYE-10"]["heard_direct"] == 1 and infra["SQB"]["heard_direct"] == 1
 
 
-def test_admin_stations_report_gating_feed(client):  # noqa: F811
+def test_admin_stations_report_gating_feed(client):
     import time
     _register(client)
     ing = client.ingester
@@ -198,7 +198,7 @@ def test_login_server_parsing():
     assert packets.logresp_server("# aprsc 2.1.19 server banner") is None
 
 
-def test_admin_stations_report_login_server(client):  # noqa: F811
+def test_admin_stations_report_login_server(client):
     _register(client)
     ing = client.ingester
     ing.dupes.on_server("K7SWI-IS")

@@ -11,16 +11,25 @@ Both feeds' server settings are kept in the database and edited on the admin pag
 """
 import asyncio
 import json
-from concurrent.futures import ThreadPoolExecutor
 import logging
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 
 from . import config, db
 from .logbuf import APRS as aprs_log
-from .packets import (LastFix, Outcome, RecentTx, Registry, evaluate, login_server, logresp_server,
-                      strip_dupe_prefix, tx_key)
+from .packets import (
+    LastFix,
+    Outcome,
+    RecentTx,
+    Registry,
+    evaluate,
+    login_server,
+    logresp_server,
+    strip_dupe_prefix,
+    tx_key,
+)
 
 log = logging.getLogger("ingest")
 

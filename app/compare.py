@@ -343,8 +343,8 @@ def _side(heard: int, sent: int, start: int, end: int) -> dict:
 def _node_cells(c, station, start, end, cell_m, match, day_of):
     """Per square (of where each transmission was sent from): of the
     transmissions anyone heard, how many this station heard, also per day."""
-    from .reliability import _cell
     from . import grid
+    from .reliability import _cell
     dlat, dlon = grid.cell_deg(cell_m)
     expr, arg = ("heard_by = ?", station) if match == "first" else ("chain LIKE ?", f"% {station} %")
     cells: dict = {}
@@ -368,6 +368,7 @@ def compare_change(c, station: str, at: int, days: int | None, cell_m: int = 500
     now, with a before period just as long. same_route: only squares the
     station was in during both periods, so a detour doesn't count as a change."""
     import time
+
     from . import grid
     from .reliability import reliability
     now = now or int(time.time())

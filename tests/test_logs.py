@@ -2,7 +2,7 @@
 import logging
 
 from app import logbuf
-from test_api import H, client, login  # noqa: F401  (fixture)
+from conftest import H, login
 
 
 def test_mask():
@@ -24,7 +24,7 @@ def test_ring_log():
     assert [e["text"] for e in r.since(None, 1)] == ["line 4"]
 
 
-def test_log_api(client):  # noqa: F811
+def test_log_api(client):
     assert client.get("/api/admin/logs").status_code == 401
     login(client)
     ids = [s["id"] for s in client.get("/api/admin/logs").json()]
@@ -58,7 +58,7 @@ def test_log_api(client):  # noqa: F811
     assert client.get("/api/admin/logs/nodecfg").json() == {"epoch": 0, "entries": []}
 
 
-def test_rejects_age_out_and_list_10(client):  # noqa: F811
+def test_rejects_age_out_and_list_10(client):
     import time
     from app import db
     login(client)

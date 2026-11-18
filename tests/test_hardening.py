@@ -7,7 +7,6 @@ import pytest
 from fastapi import HTTPException
 
 from app import auth, ingest, remotecfg
-from test_api import client  # noqa: F401  (fixture)
 
 
 # ── remote config: no line injection into the APRS-IS stream ────────────────
@@ -133,7 +132,7 @@ def test_crashed_feed_loop_is_restarted(monkeypatch):
     assert len(calls) == 2
 
 
-def test_security_headers(client):  # noqa: F811
+def test_security_headers(client):
     for path in ("/", "/admin", "/api/config"):
         h = client.get(path).headers
         assert h["x-frame-options"] == "DENY"
@@ -141,7 +140,7 @@ def test_security_headers(client):  # noqa: F811
         assert "frame-ancestors 'none'" in h["content-security-policy"]
 
 
-def test_absurd_timestamps_are_clamped(client):  # noqa: F811
+def test_absurd_timestamps_are_clamped(client):
     assert client.get("/api/coverage", params={"start": -5, "end": 10**30}).status_code in (200, 422)
     assert client.get("/api/coverage", params={"start": 0, "end": 2**63}).status_code in (200, 422)
 
@@ -181,21 +180,21 @@ def test_a_failing_line_is_logged_as_error_not_raised():
     asyncio.run(go())
 
 
-def test_live_streams_are_capped_per_address(client):  # noqa: F811
-    from app import main
-    main.ingester.closing = True  # streams end straight after the first line
+def test_live_streams_are_capped_per_address(client):
+    from app.routes import public
+    public.ingester.closing = True  # streams end straight after the first line
     try:
         r = client.get("/api/live")
         assert r.status_code == 200 and r.text.startswith("retry:")
-        assert dict(main._live_by_ip) == {}  # the slot was given back
-        main._live_by_ip["testclient"] = main.LIVE_PER_IP
+        assert dict(public._live_by_ip) == {}  # the slot was given back
+        public._live_by_ip["testclient"] = public.LIVE_PER_IP
         assert client.get("/api/live").status_code == 429
     finally:
-        main._live_by_ip.clear()
-        main.ingester.closing = False
+        public._live_by_ip.clear()
+        public.ingester.closing = False
 
 
-def test_referrer_is_sent_to_tile_servers(client):  # noqa: F811
+def test_referrer_is_sent_to_tile_servers(client):
     # OpenStreetMap refuses tiles without a Referer.
     assert client.get("/").headers["referrer-policy"] == "strict-origin-when-cross-origin"
     csp = client.get("/").headers["content-security-policy"]

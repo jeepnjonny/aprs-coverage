@@ -2,7 +2,7 @@
 import time
 
 from app import compare, db, devicelog
-from test_api import H, client, login  # noqa: F401  (fixture)
+from conftest import H, login
 from test_accounts import approve, other, signup
 
 _NOW = int(time.time())
