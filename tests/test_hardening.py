@@ -200,3 +200,32 @@ def test_referrer_is_sent_to_tile_servers(client):  # noqa: F811
     assert client.get("/").headers["referrer-policy"] == "strict-origin-when-cross-origin"
     csp = client.get("/").headers["content-security-policy"]
     assert "script-src 'self' https://unpkg.com" in csp and "tile.openstreetmap.org" in csp
+
+
+def test_backup_copies_once_a_day_and_rotates(tmp_path, monkeypatch):
+    import sqlite3
+
+    from app import config, db
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "live.sqlite")
+    db.init()
+    with db.session() as c:
+        c.execute("INSERT INTO settings(key, value) VALUES('x', 'y')")
+    out = tmp_path / "bk"
+    for day in ("2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"):
+        assert db.backup(out, keep=2, today=day) is not None
+    assert db.backup(out, keep=2, today="2026-01-04") is None  # already done today
+    files = sorted(p.name for p in out.iterdir())
+    assert files == ["coverage-2026-01-03.sqlite", "coverage-2026-01-04.sqlite"]
+    with sqlite3.connect(out / files[-1]) as c:
+        assert c.execute("SELECT value FROM settings WHERE key='x'").fetchone() == ("y",)
+
+
+def test_env_file_inline_comments_and_quotes(tmp_path, monkeypatch):
+    from app import config
+    env = tmp_path / ".env"
+    env.write_text('A_ONE=K7ABC-CV  # my login\nA_TWO="has # hash"\nA_THREE=plain\n')
+    for k in ("A_ONE", "A_TWO", "A_THREE"):
+        monkeypatch.delenv(k, raising=False)
+    config._load_dotenv(env)
+    import os
+    assert (os.environ["A_ONE"], os.environ["A_TWO"], os.environ["A_THREE"]) == ("K7ABC-CV", "has # hash", "plain")

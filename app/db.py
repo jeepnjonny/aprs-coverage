@@ -2,6 +2,7 @@
 ingester write while the web handlers read."""
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
 
 from . import config
 
@@ -228,3 +229,31 @@ def set_setting(key: str, value: str) -> None:
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
+
+
+# ── backups ──────────────────────────────────────────────────────────────────
+BACKUP_PREFIX = "coverage-"
+
+
+def backup(dest_dir: Path, keep: int, today: str) -> Path | None:
+    """Copy the database to dest_dir/coverage-<today>.sqlite with SQLite's
+    online backup (consistent while the app keeps writing), unless today's
+    copy exists. Keeps the newest `keep` copies. Returns the new file."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    out = dest_dir / f"{BACKUP_PREFIX}{today}.sqlite"
+    if out.exists():
+        return None
+    tmp = out.with_suffix(".partial")
+    src = connect()
+    try:
+        dst = sqlite3.connect(tmp)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    tmp.replace(out)  # only complete copies get the real name
+    for old in sorted(dest_dir.glob(f"{BACKUP_PREFIX}*.sqlite"))[:-keep]:
+        old.unlink()
+    return out

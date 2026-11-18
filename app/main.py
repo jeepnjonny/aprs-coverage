@@ -56,9 +56,11 @@ async def lifespan(app: FastAPI):
     _end_streams_on_stop()
     task = asyncio.create_task(ingester.run())
     rematch = asyncio.create_task(_rematch_loop())
+    backups = asyncio.create_task(_backup_loop())
     yield
     task.cancel()
     rematch.cancel()
+    backups.cancel()
     await remote.sender.close()
 
 
@@ -76,6 +78,23 @@ async def _rematch_loop():
             await asyncio.to_thread(run)
         except Exception:
             logging.getLogger("devicelog").exception("re-matching device logs failed")
+
+
+async def _backup_loop():
+    """A copy of the database a day (the first check is a minute after start)."""
+    if config.BACKUP_KEEP <= 0:
+        return
+    log = logging.getLogger("backup")
+    await asyncio.sleep(60)
+    while True:
+        try:
+            today = time.strftime("%Y-%m-%d")
+            out = await asyncio.to_thread(db.backup, config.BACKUP_DIR, config.BACKUP_KEEP, today)
+            if out:
+                log.info("database backed up to %s", out)
+        except Exception:
+            log.exception("database backup failed")
+        await asyncio.sleep(3600)
 
 
 app = FastAPI(title="APRS Coverage", lifespan=lifespan, docs_url=None, redoc_url=None)

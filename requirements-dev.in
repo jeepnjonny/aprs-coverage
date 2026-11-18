@@ -1,0 +1,5 @@
+# Test dependencies, on top of requirements.txt. Regenerate
+# requirements-dev.txt after editing (see README, "Updating dependencies").
+-c requirements.txt
+pytest==9.2.0
+httpx==0.28.1
