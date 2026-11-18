@@ -92,6 +92,12 @@ _MESSAGE_RE = re.compile(r"^([^>]+)>[^:]*::(.{9}):(.*)$")
 _BAD_CHARS = set(" ,={}|~")
 
 
+def _printable(v: str) -> bool:
+    """Printable ASCII only. Anything else (above all CR/LF, which would end
+    the packet and start a forged one on our APRS-IS login) is refused."""
+    return all(" " <= ch < "\x7f" for ch in v)
+
+
 class CommandError(Exception):
     def __init__(self, message: str, code: str, status: int = 400):
         super().__init__(message)
@@ -115,7 +121,7 @@ def check_login(login: str, reserved: set[str]) -> str:
     already logged in to APRS-IS by stations we care about: logging in as one
     of them would make the server drop that station's connection."""
     call = (login or "").strip().upper()
-    if not CALLSIGN_RE.match(call):
+    if not CALLSIGN_RE.fullmatch(call):
         raise CommandError("Enter your callsign (e.g. K7ABC or K7ABC-CF) to send from", "BAD_LOGIN", 422)
     if call in reserved:
         raise CommandError(f"{call} is already logged in to APRS-IS by a station here; using it would knock "
@@ -170,22 +176,22 @@ def validate_value(code: str, value) -> str:
         raise CommandError(f"Unknown field {code}", "BADFIELD", 422)
     v = str(value).strip()
     name = spec["label"]
-    if any(ch in _BAD_CHARS for ch in v):
+    if not _printable(v) or any(ch in _BAD_CHARS for ch in v):
         raise CommandError(f"{name}: spaces and , = {{ }} | ~ are not allowed", "BADVALUE", 422)
     t = spec["type"]
     if t == "enum":
         if v not in spec["values"]:
             raise CommandError(f"{name}: must be one of {', '.join(spec['values'])}", "BADVALUE", 422)
     elif t == "int":
-        if not _INT_RE.match(v) or not spec["min"] <= int(v) <= spec["max"]:
+        if not _INT_RE.fullmatch(v) or not spec["min"] <= int(v) <= spec["max"]:
             raise CommandError(f"{name}: whole number {spec['min']} to {spec['max']}", "BADVALUE", 422)
     elif t == "float":
-        if not _FLOAT_RE.match(v) or not spec["min"] <= float(v) <= spec["max"]:
+        if not _FLOAT_RE.fullmatch(v) or not spec["min"] <= float(v) <= spec["max"]:
             raise CommandError(f"{name}: number {spec['min']} to {spec['max']}", "BADVALUE", 422)
     elif t == "path":
         # The firmware separates path hops with commas, but a comma also
         # separates the fields of a write, so only a one-hop path can be sent.
-        if not _PATH_TOKEN_RE.match(v):
+        if not _PATH_TOKEN_RE.fullmatch(v):
             raise CommandError(f"{name}: one hop like WIDE1-1 (a multi-hop path can't be sent "
                                "remotely because the protocol uses commas between fields)", "BADVALUE", 422)
     elif t == "string":
@@ -289,6 +295,8 @@ class AprsSender:
     def send(self, packet: str) -> None:
         if not self.connected:
             raise CommandError("The APRS-IS sending connection dropped", "NO_TRANSPORT", 503)
+        if not _printable(packet):  # last line of defence against line injection
+            raise CommandError("The message contains characters APRS can't carry", "BADVALUE", 422)
         self.last_used = time.monotonic()
         self._writer.write((packet + "\r\n").encode())
         aprs_log.add("tx", f"cfg {self.login}", packet)
@@ -441,8 +449,8 @@ class RemoteConfig:
 
     async def unlock(self, login: str, callsign: str, token: str) -> dict:
         token = token.strip()
-        if not token or len(token) > 40 or any(ch in "{}|~" for ch in token):
-            raise CommandError("Token must be 1-40 characters without { } | ~", "BADVALUE", 422)
+        if not token or len(token) > 40 or not _printable(token) or any(ch in "{}|~" for ch in token):
+            raise CommandError("Token must be 1-40 plain characters without { } | ~", "BADVALUE", 422)
         return await self.run(login, callsign, f"CSU {token}")
 
     async def write(self, login: str, callsign: str, fields: dict) -> dict:

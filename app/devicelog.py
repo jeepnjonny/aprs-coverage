@@ -29,7 +29,11 @@ MATCH_BEFORE_S, MATCH_AFTER_S = 30, 90
 # that from the same spot repeats itself, and those repeats never reach APRS-IS
 # however well they were heard, so they are left out of the counts.
 APRSIS_DUPE_S = 30
-REMATCH_WINDOW_S = 2 * 86400      # background re-matching looks this far back
+# Background re-matching looks this far back. An upload is matched as it
+# arrives; re-matching only catches live uploads that beat APRS-IS, whose
+# packets arrive within MATCH_AFTER_S. The loop runs every 5 minutes, so this
+# gives each entry several tries without rescanning days of logs each time.
+REMATCH_WINDOW_S = 30 * 60
 LORA_PREFIX = "<\xff\x01"
 
 
@@ -242,7 +246,7 @@ def match(c, device: str, start: int, end: int) -> int:
     field and nearby times; the closest pairs are taken first, and each
     stored transmission matches one log entry at most, so a lost beacon
     doesn't claim the next identical one (a parked tracker repeats itself)."""
-    ents = c.execute("SELECT id, ts, info FROM device_log WHERE device=? AND kind='tx' AND is_pos=1 "
+    ents = c.execute("SELECT id, ts, info, txid, repeat_of FROM device_log WHERE device=? AND kind='tx' AND is_pos=1 "
                      "AND ts BETWEEN ? AND ?", (device, start, end)).fetchall()
     if not ents:
         return 0
@@ -279,8 +283,9 @@ def match(c, device: str, start: int, end: int) -> int:
             near = [txid for pts, txid in every.get(e["info"], ()) if -APRSIS_DUPE_S <= pts - e["ts"] <= 5]
             if near:
                 repeat[e["id"]] = near[0]
-    c.executemany("UPDATE device_log SET txid=?, repeat_of=? WHERE id=?",
-                  [(got.get(e["id"]), repeat.get(e["id"]), e["id"]) for e in ents])
+    changed = [(got.get(e["id"]), repeat.get(e["id"]), e["id"]) for e in ents
+               if (e["txid"], e["repeat_of"]) != (got.get(e["id"]), repeat.get(e["id"]))]
+    c.executemany("UPDATE device_log SET txid=?, repeat_of=? WHERE id=?", changed)
     return len(got)
 
 
@@ -325,7 +330,7 @@ def explain_unheard(c, device: str, ts: int, info: str, now: int | None = None) 
 def rematch_recent(c, now: int | None = None) -> int:
     """Logs can be uploaded live, before APRS-IS has delivered the packets.
     Re-match recent unmatched transmissions; the ingester's run loop calls
-    this every few minutes."""
+    this every few minutes (main._rematch_loop)."""
     now = now or int(time.time())
     n = 0
     for r in c.execute("SELECT device, MIN(ts) FROM device_log WHERE kind='tx' AND is_pos=1 AND txid IS NULL "

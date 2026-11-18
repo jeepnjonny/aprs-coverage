@@ -11,7 +11,7 @@ echo "=== Deploying ${SRC} -> ${INSTALL_DIR} ==="
 sudo mkdir -p "${INSTALL_DIR}/data"
 sudo rsync -a --delete \
   --exclude='.git' --exclude='.venv' --exclude='data' --exclude='.env' \
-  --exclude='__pycache__' --exclude='.pytest_cache' --exclude='tests' \
+  --exclude='__pycache__' --exclude='.pytest_cache' --exclude='tests' --exclude='/.deployed-rev' \
   "${SRC}/" "${INSTALL_DIR}/"
 
 if [ ! -f "${INSTALL_DIR}/.env" ]; then
@@ -45,3 +45,10 @@ if [ -d /etc/nginx ] && ! sudo cmp -s "${INSTALL_DIR}/nginx-aprs-coverage.conf" 
     sudo nginx -t
   fi
 fi
+
+# Record what is now live. auto-update.sh compares against this rather than the
+# checkout, so a deploy that failed part-way is tried again on its next run.
+if git -C "${SRC}" rev-parse HEAD >/dev/null 2>&1; then
+  git -C "${SRC}" rev-parse HEAD | sudo tee "${INSTALL_DIR}/.deployed-rev" >/dev/null
+fi
+echo "=== Deploy complete ==="

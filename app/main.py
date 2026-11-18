@@ -7,6 +7,7 @@ import math
 import re
 import signal
 import sqlite3
+import threading
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -14,7 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from . import auth, compare, config, db, devicelog, grid, ingest, logbuf, reliability, remotecfg
 from .ingest import ingester
@@ -80,6 +81,14 @@ app = FastAPI(title="APRS Coverage", lifespan=lifespan, docs_url=None, redoc_url
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "Referrer-Policy": "same-origin",
+}
+
+
 @app.middleware("http")
 async def revalidate_pages(request: Request, call_next):
     """Pages and static files must be revalidated on every load (a cheap 304
@@ -88,6 +97,10 @@ async def revalidate_pages(request: Request, call_next):
     path = request.url.path
     if path in ("/", "/admin", "/compare") or path.startswith("/static/"):
         response.headers.setdefault("Cache-Control", "no-cache")
+    # Basic hardening. No framing: the admin page can make nodes transmit, so
+    # it must not be clickjackable from another site.
+    for k, v in SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
     return response
 
 
@@ -153,10 +166,15 @@ def _where(c, start, end, mobiles, heard_by, match):
     return " AND ".join(clauses), args
 
 
-def _time_range(start: int | None, end: int | None) -> tuple[int, int]:
+MAX_TS = 4_102_444_800  # 2100-01-01: bounds user timestamps so they fit SQLite and datetime
+
+
+def _time_range(start: int | None, end: int | None, default_span: int = 86400) -> tuple[int, int]:
+    """Resolve a query's [start, end] in unix seconds. Values are clamped to
+    0 .. MAX_TS, so an absurd number can't overflow SQLite or datetime."""
     now = int(time.time())
-    end = end if end is not None else now
-    start = start if start is not None else end - 86400
+    end = min(max(end, 0), MAX_TS) if end is not None else now
+    start = min(max(start, 0), MAX_TS) if start is not None else max(end - default_span, 0)
     if start > end:
         raise HTTPException(400, "start must be before end")
     return start, end
@@ -415,12 +433,7 @@ async def api_live(request: Request):
 
 # ── comparisons (public, read-only) ─────────────────────────────────────────
 def _compare_range(start, end):
-    now = int(time.time())
-    end = end if end is not None else now
-    start = start if start is not None else end - 90 * 86400
-    if start > end:
-        raise HTTPException(400, "start must be before end")
-    return start, end
+    return _time_range(start, end, default_span=90 * 86400)
 
 
 def _two(a: str, b: str) -> tuple[str, str]:
@@ -466,7 +479,7 @@ def api_compare_nodes(
 @app.get("/api/compare/change")
 def api_compare_change(
     station: str,
-    at: int,
+    at: int = Query(..., ge=0, le=MAX_TS),
     days: int | None = Query(7, ge=1, le=365, description="days on each side; omit for 'until now'"),
     until_now: bool = False,
     same_route: bool = True,
@@ -491,7 +504,7 @@ def api_compare_change(
 
 class EventIn(BaseModel):
     device: str
-    ts: int
+    ts: int = Field(ge=0, le=MAX_TS)
     text: str
 
 
@@ -596,7 +609,7 @@ def upload_device_log(body: DeviceLogIn, request: Request):
         user = devicelog.user_for_key(c, key, int(time.time())) if key else None
         if user is None:
             why = "no key" if not key else f"unknown or revoked key {key[:10]}…"
-            logbuf.DEVICES.add("refused", ip, f"upload for {body.device.strip().upper() or '(no device)'}: {why}", app_note)
+            logbuf.DEVICES.add("refused", ip, f"upload for {body.device.strip().upper()[:40] or '(no device)'}: {why}", app_note)
             raise HTTPException(401, "A valid API key is required (Authorization: Bearer <key>)")
         tag = f"{user['username']} {body.device.strip().upper()}"
         try:
@@ -675,7 +688,7 @@ class StationIn(BaseModel):
     def _color(cls, v):
         if v in (None, ""):
             return None
-        if not COLOR_RE.match(v):
+        if not COLOR_RE.fullmatch(v):
             raise ValueError("color must be #rrggbb")
         if is_reddish(v):
             raise ValueError("red is reserved on the map for squares where beacons were lost; pick another color")
@@ -693,9 +706,9 @@ class StationIn(BaseModel):
         if self.kind not in ("mobile", "igate", "digi", "digi_igate"):
             raise HTTPException(422, "kind must be mobile, igate, digi or digi_igate")
         if self.kind == "mobile":
-            ok = MOBILE_RE.match(self.callsign) or OBJECT_RE.match(self.callsign)
+            ok = MOBILE_RE.fullmatch(self.callsign) or OBJECT_RE.fullmatch(self.callsign)
         else:
-            ok = CALL_RE.match(self.callsign)
+            ok = CALL_RE.fullmatch(self.callsign)
         if not ok:
             hint = (" (mobiles may end in * or -* for any SSID; object trackers are"
                     " SENDER:OBJECT, e.g. K7SWI:CAR01)") if self.kind == "mobile" else ""
@@ -796,16 +809,19 @@ MAX_DEVICES = 20  # per user
 MAX_PENDING_ACCOUNTS = 25  # sign-ups pause while this many wait for approval
 SIGNUPS_PER_IP, SIGNUP_WINDOW = 5, 3600
 _signups: dict[str, deque] = defaultdict(deque)
+# Sign-ups run in worker threads; the per-IP and pending-account limits are
+# check-then-act, so one sign-up at a time (they're rare, and slow anyway).
+_signup_lock = threading.Lock()
 
 
 def _clean_profile(callsign: str, name: str, email: str, need_call: bool) -> tuple[str, str, str]:
     call = callsign.strip().upper()
-    if (call or need_call) and not auth.BASE_CALL_RE.match(call):
+    if (call or need_call) and not auth.BASE_CALL_RE.fullmatch(call):
         raise HTTPException(422, "Callsign must be a base callsign without an SSID, e.g. K7ABC")
     name, email = name.strip(), email.strip()
     if len(name) > 80:
         raise HTTPException(422, "Name is limited to 80 characters")
-    if email and (len(email) > 120 or not EMAIL_RE.match(email)):
+    if email and (len(email) > 120 or not EMAIL_RE.fullmatch(email)):
         raise HTTPException(422, "That email address doesn't look right")
     return call, name, email
 
@@ -855,13 +871,8 @@ class SignupIn(BaseModel):
     website: str = ""  # honeypot: hidden on the form, so only bots fill it in
 
 
-@app.post("/api/signup")
-def signup(body: SignupIn, request: Request, response: Response):
-    """Create a pending account and its pending devices, and log in, so the
-    person can watch for approval and fix their submission meanwhile."""
-    if body.website:
-        return {"user": None}  # a bot; say nothing useful
-    ip = auth.client_ip(request)
+def _signup_locked(body, ip: str) -> tuple[dict, list[str]]:
+    """The checks and inserts of a sign-up; call with _signup_lock held."""
     now = time.time()
     recent = _signups[ip]
     while recent and recent[0] < now - SIGNUP_WINDOW:
@@ -869,7 +880,7 @@ def signup(body: SignupIn, request: Request, response: Response):
     if len(recent) >= SIGNUPS_PER_IP:
         raise HTTPException(429, "Too many sign-ups from here. Try again later.")
     username = body.username.strip()
-    if not auth.USERNAME_RE.match(username):
+    if not auth.USERNAME_RE.fullmatch(username):
         raise HTTPException(422, "Username: 3 to 32 letters, digits, dots, dashes or underscores")
     auth.check_password_rules(body.password)
     call, name, email = _clean_profile(body.callsign, body.name, body.email, need_call=True)
@@ -890,12 +901,30 @@ def signup(body: SignupIn, request: Request, response: Response):
         taken = [cs for cs in calls if c.execute("SELECT 1 FROM stations WHERE callsign=?", (cs,)).fetchone()]
         if taken:
             raise HTTPException(409, f"Already registered: {', '.join(taken)}. Ask an admin if it's yours.")
-        uid = auth.create_user(c, username, body.password, callsign=call, name=name, email=email)
+        try:
+            uid = auth.create_user(c, username, body.password, callsign=call, name=name, email=email)
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "That username is taken")
         for d in body.devices:
             _insert_station(c, d, owner_id=uid, status="pending")
         user = _user(c, uid)
     recent.append(now)
-    logging.getLogger("admin").info("sign-up: %s (%s), devices %s", username, call, ", ".join(calls))
+    for k in [k for k, q in _signups.items() if not q]:
+        del _signups[k]  # forget addresses with no recent sign-ups
+    return user, calls
+
+
+@app.post("/api/signup")
+def signup(body: SignupIn, request: Request, response: Response):
+    """Create a pending account and its pending devices, and log in, so the
+    person can watch for approval and fix their submission meanwhile."""
+    if body.website:
+        return {"user": None}  # a bot; say nothing useful
+    ip = auth.client_ip(request)
+    with _signup_lock:
+        user, calls = _signup_locked(body, ip)
+    uid = user["id"]
+    logging.getLogger("admin").info("sign-up: %s (%s), devices %s", user["username"], user["callsign"], ", ".join(calls))
     _start_session(request, response, uid)
     return {"user": auth.public_user(user)}
 
@@ -1116,7 +1145,7 @@ def admin_purge_station_packets(sid: int):
         # Forget the last fix too, so a changed station isn't rejected as a
         # speed jump from its old position.
         pattern = st["callsign"].upper()
-        for m in [m for m in ingester.last if mobile_matches(m, pattern)]:
+        for m in [m for m in list(ingester.last) if mobile_matches(m, pattern)]:
             ingester.last.pop(m, None)
     logging.getLogger("admin").info("purged %d packets for %s", deleted, st["callsign"])
     return {"deleted": deleted}
@@ -1237,7 +1266,7 @@ class FeedsIn(BaseModel):
     @classmethod
     def _host(cls, v):
         v = v.strip()
-        if v and not HOST_RE.match(v):
+        if v and not HOST_RE.fullmatch(v):
             raise ValueError("server must be a host name or IP address")
         return v.strip("[]")
 
@@ -1252,7 +1281,7 @@ class FeedsIn(BaseModel):
     @classmethod
     def _dlogin(cls, v):
         v = v.strip().upper()
-        if v and not LOGIN_RE.match(v):
+        if v and not LOGIN_RE.fullmatch(v):
             raise ValueError("login must be a callsign with an optional SSID, e.g. K7ABC-DF")
         return v
 

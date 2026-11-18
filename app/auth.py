@@ -27,9 +27,11 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 BASE_CALL_RE = re.compile(r"^[A-Z0-9]{1,2}[0-9][A-Z]{1,4}$")
 MIN_PASSWORD = 10
 
-# Login rate limit: at most MAX_FAILS failed attempts per key (IP, and
-# separately username) per WINDOW seconds.
-MAX_FAILS, WINDOW = 8, 900
+# Login rate limit, per WINDOW seconds: MAX_FAILS failed attempts per IP, and
+# MAX_FAILS_PER_USER per username from all IPs together. The per-username cap
+# is much higher, so one address (8 tries) can't lock someone else out; it
+# takes a spread-out guessing attack to reach it.
+MAX_FAILS, MAX_FAILS_PER_USER, WINDOW = 8, 100, 900
 _fails: dict[str, deque] = defaultdict(deque)
 
 
@@ -62,13 +64,22 @@ def client_ip(request: Request) -> str:
     return peer
 
 
+def _limit_for(key: str) -> int:
+    return MAX_FAILS_PER_USER if key.startswith("u:") else MAX_FAILS
+
+
 def check_rate_limit(*keys: str) -> None:
     now = time.time()
     for key in keys:
-        q = _fails[key]
+        q = _fails.get(key)
+        if q is None:
+            continue
         while q and q[0] < now - WINDOW:
             q.popleft()
-        if len(q) >= MAX_FAILS:
+        if not q:
+            _fails.pop(key, None)  # don't keep a key per username ever tried
+            continue
+        if len(q) >= _limit_for(key):
             raise HTTPException(429, "Too many failed logins, try again later")
 
 

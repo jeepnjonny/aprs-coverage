@@ -51,10 +51,10 @@ def main(argv: list[str]) -> int:
     if cmd == "add-user" and args:
         username, role = args[0], (args[1] if len(args) > 1 else "node_owner")
         call = (args[2] if len(args) > 2 else "").upper()
-        if role not in auth.ROLES or not auth.USERNAME_RE.match(username):
+        if role not in auth.ROLES or not auth.USERNAME_RE.fullmatch(username):
             print(__doc__)
             return 1
-        if call and not auth.BASE_CALL_RE.match(call):
+        if call and not auth.BASE_CALL_RE.fullmatch(call):
             print("Callsign must be a base callsign without an SSID, e.g. K7ABC.")
             return 1
         pw = _ask_password()
