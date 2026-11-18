@@ -24,13 +24,19 @@
     preset: '604800', from: null, to: null, toNow: false, color: 'single', singleColor: '#2f81f7',
     shade: true, cell: 1000, opacity: 60, borders: true, stations: true, live: true, me: false, follow: false,
     basemap: 'osm', match: 'first', mobiles: null, heard: null,   // null = all selected
+    mobilesSeen: null, heardSeen: null,                           // what existed when the selection was saved
     hw: null, hwScope: 'both',                                    // hardware filter; null = all
     fails: false,                                                 // red outline where beacons were lost
     estimates: true,                                              // reliability: estimate unlogged trackers
   };
   let S = { ...DEFAULTS };
   try { Object.assign(S, JSON.parse(localStorage.getItem('acov-ui') || '{}')); } catch {}
-  const save = () => { try { localStorage.setItem('acov-ui', JSON.stringify(S)); } catch {} };
+  const save = () => {
+    // Remember which stations existed, so ones added later start ticked (see reconcile).
+    S.mobilesSeen = S.mobiles === null ? null : [...MOBILES];
+    S.heardSeen = S.heard === null ? null : allHeard();
+    try { localStorage.setItem('acov-ui', JSON.stringify(S)); } catch {}
+  };
 
   // ── map + basemaps ────────────────────────────────────────────────────────
   const map = L.map('map', { zoomControl: false, preferCanvas: true });
@@ -507,7 +513,20 @@
     return universe.every(k => sel.has(k)) ? null : universe.filter(k => sel.has(k));
   }
 
+  // A saved selection lists what was ticked. A station or mobile that didn't
+  // exist yet wasn't unticked by anyone, so tick it rather than hide it.
+  function reconcile(key, universe) {
+    const sel = S[key], seen = S[key + 'Seen'];
+    if (sel === null || !seen) return;  // all selected, or saved before this was tracked
+    const known = new Set(seen);
+    for (const k of universe) if (!known.has(k) && !sel.includes(k)) sel.push(k);
+    if (universe.every(k => sel.includes(k))) S[key] = null;
+  }
+
   function buildFilters() {
+    reconcile('mobiles', MOBILES);
+    reconcile('heard', allHeard());
+    save();
     // Hardware actually in use, in the server's order, then "Not set".
     const used = new Set(STATIONS.map(s => s.hardware || NOT_SET));
     const hwItems = [...Object.keys((CFG && CFG.hardware) || {}).filter(k => used.has(k)), NOT_SET]
@@ -571,15 +590,36 @@
   }
 
   // ── live feed ─────────────────────────────────────────────────────────────
-  let liveTimer = null, logTimer = null;
+  let liveTimer = null, logTimer = null, lastLiveRefresh = 0, liveRetry = 5000, liveHidden = false;
+  const LIVE_REFRESH_MS = 15000;  // redraw at most this often while packets stream in
+  // Redraw soon after a packet, but at most every LIVE_REFRESH_MS, so a busy
+  // feed can't keep postponing it and a quiet one doesn't redraw per packet.
+  function scheduleLiveRefresh() {
+    if (liveTimer) return;
+    if (document.hidden) { liveHidden = true; return; }  // caught up on visibilitychange
+    const wait = Math.max(2500, lastLiveRefresh + LIVE_REFRESH_MS - Date.now());
+    liveTimer = setTimeout(() => { liveTimer = null; lastLiveRefresh = Date.now(); refresh(); }, wait);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && liveHidden) { liveHidden = false; scheduleLiveRefresh(); }
+  });
   function setLive(state, text) {
     $('live').className = 'live ' + state;
     $('live-text').textContent = text;
   }
   function startLive() {
     const es = new EventSource('api/live');
-    es.onopen = () => checkStatus();
-    es.onerror = () => setLive('bad', 'reconnecting…');
+    es.onopen = () => { liveRetry = 5000; checkStatus(); };
+    es.onerror = () => {
+      setLive('bad', 'reconnecting…');
+      // The browser retries on its own after a dropped connection, but gives up
+      // for good after an error response (e.g. a 502 while the server restarts).
+      if (es.readyState === EventSource.CLOSED) {
+        es.close();
+        setTimeout(startLive, liveRetry);
+        liveRetry = Math.min(liveRetry * 2, 60000);
+      }
+    };
     es.onmessage = ev => {
       let p; try { p = JSON.parse(ev.data); } catch { return; }
       if (S.live) {
@@ -590,7 +630,7 @@
       }
       if (!MOBILES.includes(p.mobile)) { MOBILES.push(p.mobile); MOBILES.sort(); buildFilters(); }
       if (isRelative()) {
-        clearTimeout(liveTimer); liveTimer = setTimeout(refresh, 2500);
+        scheduleLiveRefresh();
         // Trackers' transmit logs arrive from the app about a minute later; look
         // again then so the lost-beacon and reliability counts catch up.
         if (isRel() || S.fails) { clearTimeout(logTimer); logTimer = setTimeout(refresh, 90000); }
@@ -762,7 +802,12 @@
       if (isRelative() && end - start <= 86400 && !document.hidden) refresh();
     }, 60000);
     setInterval(async () => {  // pick up station edits and marker positions
-      try { STATIONS = await getJSON('api/stations'); renderStations(); } catch {}
+      try {
+        const before = STATIONS.map(s => s.callsign).join();
+        STATIONS = await getJSON('api/stations');
+        renderStations();
+        if (STATIONS.map(s => s.callsign).join() !== before) { buildFilters(); refresh(); }
+      } catch {}
     }, 300000);
   })().catch(e => { $('summary').textContent = 'Failed to start: ' + e.message; });
 })();
