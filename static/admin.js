@@ -693,12 +693,38 @@
   }
 
   // ── tabs ──────────────────────────────────────────────────────────────────
+  // Tabs as screen readers and keyboards expect: each tab names its panel,
+  // only the selected tab is in the Tab order, and arrow keys / Home / End move
+  // between tabs (selecting as they go).
+  function wireTabs(tabs, panelOf, select) {
+    for (const t of tabs) {
+      const p = panelOf(t);
+      t.id = t.id || `tab-btn-${t.dataset.tab}`;
+      p.id = p.id || `pane-${t.dataset.tab}`;
+      p.setAttribute('role', 'tabpanel');
+      p.setAttribute('aria-labelledby', t.id);
+      t.setAttribute('aria-controls', p.id);
+      t.addEventListener('keydown', e => {
+        const live = tabs.filter(x => !x.hidden);
+        const i = live.indexOf(t);
+        const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: live.length - 1 }[e.key];
+        if (to === undefined) return;
+        e.preventDefault();
+        const next = live[(to + live.length) % live.length];
+        select(next.dataset.tab);
+        next.focus();
+      });
+    }
+  }
+  // Keep tabindex in step with aria-selected (call after selecting).
+  const rovingTabindex = tabs => tabs.forEach(t => { t.tabIndex = t.getAttribute('aria-selected') === 'true' ? 0 : -1; });
   function showTab(name) {
     document.querySelectorAll('.admin-tabs .tab').forEach(b => {
       b.classList.toggle('active', b.dataset.tab === name);
       b.setAttribute('aria-selected', b.dataset.tab === name);
     });
     document.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.dataset.pane !== name; });
+    rovingTabindex(TABS());
     const home = isAdmin() ? 'stations' : 'mine';
     try { history.replaceState(null, '', name === home ? location.pathname + location.search : `#${name}`); } catch { /* ignore */ }
     if (name === 'feeds') { loadStatus().catch(() => {}); loadRejects().catch(() => {}); }
@@ -710,6 +736,7 @@
     if (name === 'logs') startLogs().catch(e => { $('lg-err').textContent = e.message; });
   }
   document.querySelectorAll('.admin-tabs .tab').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+  wireTabs(TABS(), t => document.querySelector(`[data-pane="${t.dataset.tab}"]`), showTab);
   const activeTab = () => document.querySelector('.admin-tabs .tab.active')?.dataset.tab;
 
   // ── node config ───────────────────────────────────────────────────────────

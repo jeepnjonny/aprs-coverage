@@ -141,7 +141,8 @@
     ++seq;  // whatever happens next, any request still in flight is stale
     writeUrl();
     if (mode === 'change') return loadChange();
-    if (!a || !b) { status(mode === 'mobiles' ? 'No mobiles have been heard yet.' : 'Register two igates or digis first.'); return; }
+    const choices = mode === 'mobiles' ? MOBILES.length : STATIONS.filter(s => s.kind !== 'mobile').length;
+    if (choices < 2) { emptyState(mode); return; }
     if (a === b) { status('Pick two different stations.'); return; }
     const { start, end } = range();
     const q = new URLSearchParams({ a, b, start, end, bucket: $('bucket').value, tz: TZ });
@@ -159,7 +160,18 @@
       render(d);
     } catch (err) { if (my === seq) status(err.message, true); }
   }
+  // Not enough stations to compare yet: say why and what to do, not just "nothing".
+  function emptyState(mode) {
+    status(' ');
+    const n = mode === 'mobiles' ? MOBILES.length : STATIONS.filter(s => s.kind !== 'mobile').length;
+    const what = mode === 'mobiles' ? 'mobiles' : 'igates or digipeaters';
+    $('status').innerHTML = `${n ? `Only one of the ${what} has` : `None of the ${what} have`} been heard so far, and
+      comparing needs two. Register a ${mode === 'mobiles' ? 'tracker' : 'station'} on the <a href="admin">account page</a>,
+      then check back once it has been heard for a while. Meanwhile the <a href="./">map</a> shows coverage so far.`;
+    $('a').disabled = $('b').disabled = true;
+  }
   function status(text, isErr) {
+    $('a').disabled = $('b').disabled = false;
     $('status').textContent = text;
     $('status').className = isErr ? 'error' : 'muted';
     if (text && !text.startsWith('Loading')) {
