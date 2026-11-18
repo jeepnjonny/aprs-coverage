@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS packets (
 CREATE INDEX IF NOT EXISTS ix_packets_ts       ON packets(ts);
 CREATE INDEX IF NOT EXISTS ix_packets_mobile   ON packets(mobile, ts);
 CREATE INDEX IF NOT EXISTS ix_packets_heard_by ON packets(heard_by, ts);
+CREATE INDEX IF NOT EXISTS ix_packets_igate    ON packets(igate, ts);   -- last heard per igate
 
 CREATE TABLE IF NOT EXISTS rejects (
     id      INTEGER PRIMARY KEY,
@@ -209,6 +210,8 @@ def _migrate(c: sqlite3.Connection) -> None:
     if "repeat_of" not in {r["name"] for r in c.execute("PRAGMA table_info(device_log)")}:
         c.execute("ALTER TABLE device_log ADD COLUMN repeat_of INTEGER")
     # Rows stored before duplicates were tracked are each their own transmission.
+    # (The index is created here, after an old table has gained the column.)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_packets_txid ON packets(txid)")
     c.execute("UPDATE packets SET txid = id WHERE txid IS NULL")
 
 

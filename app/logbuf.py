@@ -21,6 +21,7 @@ EPOCH = int(time.time() * 1000)
 
 # Secrets that must never reach a log: APRS-IS passcodes in login lines (the
 # read-only "-1" is shown) and remote-config unlock tokens in CSU messages.
+MAX_TAG, MAX_TEXT = 60, 2000  # characters kept per log entry
 _PASS_RE = re.compile(r"(\bpass\s+)(?!-1\b)\S+", re.IGNORECASE)
 _CSU_RE = re.compile(r"(:CSU\s+)[^{]*")
 
@@ -36,7 +37,10 @@ class RingLog:
         self._lock = threading.Lock()
 
     def add(self, level: str, tag: str, text: str, note: str = "") -> None:
-        entry = {"id": 0, "ts": time.time(), "level": level, "tag": tag, "text": mask(text), "note": note}
+        # Bounded, since some text (e.g. a device name on an upload) arrives
+        # before the sender is authenticated.
+        entry = {"id": 0, "ts": time.time(), "level": level, "tag": tag[:MAX_TAG],
+                 "text": mask(text[:MAX_TEXT]), "note": note[:MAX_TEXT]}
         with self._lock:
             entry["id"] = next(self._ids)
             self._buf.append(entry)

@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app import auth, ingest, remotecfg
+from test_api import client  # noqa: F401  (fixture)
 
 
 # ── remote config: no line injection into the APRS-IS stream ────────────────
@@ -108,3 +109,38 @@ def test_backoff_resets_after_a_stable_session(monkeypatch):
 
     asyncio.run(go())
     assert waits == [5, 10, 20, 5, 10]
+
+
+def test_crashed_feed_loop_is_restarted(monkeypatch):
+    monkeypatch.setattr(ingest, "CRASH_RESTART_S", 0)
+    calls = []
+
+    async def go():
+        conn = ingest.FeedConn("t")
+
+        async def run(target, on_line):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("bug")
+            raise asyncio.CancelledError
+
+        conn.run = run
+        with pytest.raises(asyncio.CancelledError):
+            await ingest.Ingester._supervise(conn, None, None)
+        assert conn.error.startswith("internal error: RuntimeError")
+
+    asyncio.run(go())
+    assert len(calls) == 2
+
+
+def test_security_headers(client):  # noqa: F811
+    for path in ("/", "/admin", "/api/config"):
+        h = client.get(path).headers
+        assert h["x-frame-options"] == "DENY"
+        assert h["x-content-type-options"] == "nosniff"
+        assert "frame-ancestors 'none'" in h["content-security-policy"]
+
+
+def test_absurd_timestamps_are_clamped(client):  # noqa: F811
+    assert client.get("/api/coverage", params={"start": -5, "end": 10**30}).status_code in (200, 422)
+    assert client.get("/api/coverage", params={"start": 0, "end": 2**63}).status_code in (200, 422)

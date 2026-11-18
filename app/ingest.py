@@ -26,7 +26,8 @@ log = logging.getLogger("ingest")
 VERSION = "aprs-coverage 0.1"
 READ_TIMEOUT_S = 90  # aprsc sends a keepalive about every 20 s
 BACKOFF_MIN_S, BACKOFF_MAX_S = 5, 120
-STABLE_SESSION_S = 60  # a connection that lasted this long resets the backoff
+STABLE_SESSION_S = 60
+CRASH_RESTART_S = 30  # wait before restarting a feed loop that crashed  # a connection that lasted this long resets the backoff
 REJECT_KEEP = 2000
 REJECT_MAX_AGE_S = 2 * 86400  # rejected packets age out after 2 days
 FEEDS_KEY = "feeds"
@@ -430,14 +431,32 @@ class Ingester:
 
     # ── connection loops ─────────────────────────────────────────────────────
     async def run(self) -> None:
-        self.registry = load_registry()
-        self.feeds = load_feeds()
-        self.own_server = db.get_setting(OWN_SERVER_KEY) or ""
-        self.last = load_last_fixes()
+        # Startup reads can be slow on a big database; keep them off the loop.
+        self.registry = await asyncio.to_thread(load_registry)
+        self.feeds = await asyncio.to_thread(load_feeds)
+        self.own_server = await asyncio.to_thread(db.get_setting, OWN_SERVER_KEY) or ""
+        self.last = await asyncio.to_thread(load_last_fixes)
         await asyncio.gather(
-            self.main.run(self._main_target, self._on_main_line),
-            self.dupes.run(self._dupe_target, self._on_dupe_line),
+            self._supervise(self.main, self._main_target, self._on_main_line),
+            self._supervise(self.dupes, self._dupe_target, self._on_dupe_line),
         )
+
+    @staticmethod
+    async def _supervise(conn: FeedConn, target, on_line) -> None:
+        """Keep a feed's loop running. Connection errors are handled inside
+        FeedConn.run; this catches anything else (a bug), which would otherwise
+        end collection silently while the website keeps serving."""
+        while True:
+            try:
+                await conn.run(target, on_line)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.exception("%s: feed loop crashed; restarting in %s s", conn.tag, CRASH_RESTART_S)
+                conn.connected, conn._writer = False, None
+                conn.error = f"internal error: {type(e).__name__}: {e}"
+                aprs_log.add("sys", conn.tag, f"{conn.error}; restarting in {CRASH_RESTART_S} s")
+                await asyncio.sleep(CRASH_RESTART_S)
 
 
 ingester = Ingester()

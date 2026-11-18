@@ -183,15 +183,15 @@ def validate_value(code: str, value) -> str:
         if v not in spec["values"]:
             raise CommandError(f"{name}: must be one of {', '.join(spec['values'])}", "BADVALUE", 422)
     elif t == "int":
-        if not _INT_RE.match(v) or not spec["min"] <= int(v) <= spec["max"]:
+        if not _INT_RE.fullmatch(v) or not spec["min"] <= int(v) <= spec["max"]:
             raise CommandError(f"{name}: whole number {spec['min']} to {spec['max']}", "BADVALUE", 422)
     elif t == "float":
-        if not _FLOAT_RE.match(v) or not spec["min"] <= float(v) <= spec["max"]:
+        if not _FLOAT_RE.fullmatch(v) or not spec["min"] <= float(v) <= spec["max"]:
             raise CommandError(f"{name}: number {spec['min']} to {spec['max']}", "BADVALUE", 422)
     elif t == "path":
         # The firmware separates path hops with commas, but a comma also
         # separates the fields of a write, so only a one-hop path can be sent.
-        if not _PATH_TOKEN_RE.match(v):
+        if not _PATH_TOKEN_RE.fullmatch(v):
             raise CommandError(f"{name}: one hop like WIDE1-1 (a multi-hop path can't be sent "
                                "remotely because the protocol uses commas between fields)", "BADVALUE", 422)
     elif t == "string":
