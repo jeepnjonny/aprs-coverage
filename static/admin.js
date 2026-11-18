@@ -692,6 +692,23 @@
     loadRejects().catch(() => {});
   }
 
+  // ── tables on phones ──────────────────────────────────────────────────────
+  // Under 640px wide the admin tables stack each row as a card (style.css,
+  // table.stack); every cell carries its column name for that layout.
+  function labelCells(table) {
+    const heads = [...(table.tHead?.rows[0]?.cells || [])].map(th => th.textContent.trim());
+    for (const tb of table.tBodies) {
+      for (const tr of tb.rows) {
+        [...tr.cells].forEach((td, i) => { if (!td.colSpan || td.colSpan === 1) td.dataset.label = heads[i] || ''; });
+      }
+    }
+  }
+  document.querySelectorAll('.admin [data-pane] table:not(.rc-fields)').forEach(t => {
+    t.classList.add('stack');
+    labelCells(t);
+    new MutationObserver(() => labelCells(t)).observe(t, { childList: true, subtree: true });
+  });
+
   // ── tabs ──────────────────────────────────────────────────────────────────
   // Tabs as screen readers and keyboards expect: each tab names its panel,
   // only the selected tab is in the Tab order, and arrow keys / Home / End move
