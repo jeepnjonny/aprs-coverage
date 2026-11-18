@@ -295,7 +295,7 @@ def test_explain_unheard(client):
         assert "matched to another logged beacon" in devicelog.explain_unheard(c, "K7ABC-9", T, f"{POS}n1", now=T + 86400)
         assert "the last one was stored 16 min before it" in devicelog.explain_unheard(c, "K7ABC-9", T + 1000, "x", now=T + 86400)
     # a packet APRS-IS delivered but the quality checks threw out
-    ing.handle_line(f"K7ABC-9>APLRT1,WIDE1-1,qAR,KG7KMV-13:!4500.00N/11000.00W>far", now=T + 2000)
+    ing.handle_line("K7ABC-9>APLRT1,WIDE1-1,qAR,KG7KMV-13:!4500.00N/11000.00W>far", now=T + 2000)
     with db.session() as c:
         assert "rejected as speed_jump" in devicelog.explain_unheard(c, "K7ABC-9", T + 1998, "x", now=T + 86400)
 
