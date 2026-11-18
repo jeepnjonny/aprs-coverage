@@ -10,7 +10,9 @@
   const TZ = -new Date().getTimezoneOffset();  // minutes east of UTC
   const SVGNS = 'http://www.w3.org/2000/svg';
 
-  let ME = null, STATIONS = [], MOBILES = [], DATA = null, seq = 0;
+  let ME = null, STATIONS = [], MOBILES = [], DATA = null, seq = 0, NOTES = [];
+  const isChange = () => $('mode').value === 'change';
+  const isNode = call => STATIONS.some(s => s.kind !== 'mobile' && s.callsign === call);
 
   async function get(url) {
     const r = await fetch(url, { headers: { 'X-Requested-With': 'fetch' } });
@@ -27,7 +29,8 @@
   }
 
   // ── controls and URL state ─────────────────────────────────────────────────
-  const CTRL = ['mode', 'a', 'b', 'range', 'bucket', 'from', 'to', 'together', 'sep', 'interval', 'match'];
+  const CTRL = ['mode', 'a', 'b', 'range', 'bucket', 'from', 'to', 'together', 'sep', 'interval', 'match',
+                'station', 'change', 'change-at', 'period', 'same-route'];
   function readUrl() {
     const q = new URLSearchParams(location.search);
     for (const k of CTRL) {
@@ -41,7 +44,7 @@
     for (const k of CTRL) {
       const el = $(k);
       if (el.closest('[hidden]')) continue;
-      if (el.type === 'checkbox') { if (el.checked) q.set(k, '1'); } else if (el.value) q.set(k, el.value);
+      if (el.type === 'checkbox') q.set(k, el.checked ? '1' : '0'); else if (el.value) q.set(k, el.value);
     }
     try { history.replaceState(null, '', `${location.pathname}?${q}`); } catch { /* ignore */ }
   }
@@ -52,8 +55,57 @@
     delete el.dataset.want;
   }
 
+  // Which controls each mode uses
+  function syncMode() {
+    const mode = $('mode').value, change = isChange();
+    for (const id of ['a-field', 'b-field', 'range-field', 'bucket-field']) $(id).hidden = change;
+    for (const id of ['station-field', 'change-field', 'period-field', 'change-opts']) $(id).hidden = !change;
+    if (change) $('custom-range').hidden = true; else range();
+    $('change-at-field').hidden = !change || $('change').value !== 'date';
+    const node = change && isNode($('station').value);
+    $('mobile-opts').hidden = mode !== 'mobiles';
+    $('node-opts').hidden = !(mode === 'nodes' || node);
+    $('same-route-text').textContent = node ? 'Same areas only' : 'Same route only';
+    $('same-route-help').textContent = node
+      ? 'Counts only squares mobiles were heard from in both periods, so different driving doesn\'t look like a change.'
+      : 'Counts only squares driven in both periods, so a detour or a new road doesn\'t look like a change.';
+  }
+
+  function fillChangeStations() {
+    const el = $('station'), cur = el.dataset.want ?? el.value;
+    const nodes = STATIONS.filter(s => s.kind !== 'mobile');
+    el.innerHTML = `<optgroup label="Mobiles">${MOBILES.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('')}</optgroup>`
+      + `<optgroup label="Igates and digis">${nodes.map(s => `<option value="${esc(s.callsign)}">${esc(s.callsign + (s.label ? ` — ${s.label}` : ''))}</option>`).join('')}</optgroup>`;
+    const all = [...MOBILES, ...nodes.map(s => s.callsign)];
+    el.value = all.includes(cur) ? cur : all[0] || '';
+    delete el.dataset.want;
+  }
+
+  // The change to compare around: one of the station's notes, or a date.
+  async function fillChanges() {
+    const el = $('change'), want = el.dataset.want ?? el.value;
+    delete el.dataset.want;
+    const station = $('station').value;
+    NOTES = station ? await get(`api/events?device=${encodeURIComponent(station)}`).catch(() => []) : [];
+    const day = ts => new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    el.innerHTML = NOTES.map(n => `<option value="n${n.id}">${esc(n.text)}, ${esc(day(n.ts))}</option>`).join('')
+      + '<option value="date">Pick a date…</option>';
+    el.value = [...el.options].some(o => o.value === want) ? want : el.options[0].value;
+    if (!$('change-at').value) {
+      const d = new Date(Date.now() - 7 * 86400000); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+      $('change-at').value = d.toISOString().slice(0, 16);
+    }
+    syncMode();
+  }
+  function changeNote() { return NOTES.find(n => `n${n.id}` === $('change').value) || null; }
+  function changeAt() {
+    const n = changeNote();
+    return n ? n.ts : Math.floor(Date.parse($('change-at').value) / 1000);
+  }
+
   function fillStations() {
     const mode = $('mode').value;
+    if (mode === 'change') { fillChangeStations(); syncMode(); return; }
     const list = mode === 'mobiles'
       ? MOBILES.map(m => ({ value: m, text: m }))
       : STATIONS.filter(s => s.kind !== 'mobile').map(s => ({ value: s.callsign, text: s.callsign + (s.label ? ` — ${s.label}` : '') }));
@@ -63,8 +115,7 @@
       el.value = list.some(o => o.value === cur) ? cur : (list[idx] || list[0] || {}).value || '';
       delete el.dataset.want;
     }
-    $('mobile-opts').hidden = mode !== 'mobiles';
-    $('node-opts').hidden = mode !== 'nodes';
+    syncMode();
   }
 
   function range() {
@@ -83,6 +134,7 @@
   async function load() {
     const mode = $('mode').value, a = $('a').value, b = $('b').value;
     writeUrl();
+    if (mode === 'change') return loadChange();
     if (!a || !b) { status(mode === 'mobiles' ? 'No mobiles have been heard yet.' : 'Register two igates or digis first.'); return; }
     if (a === b) { status('Pick two different stations.'); return; }
     const { start, end } = range();
@@ -104,7 +156,27 @@
   function status(text, isErr) {
     $('status').textContent = text;
     $('status').className = isErr ? 'error' : 'muted';
-    if (text && !text.startsWith('Loading')) $('result').hidden = true;
+    if (text && !text.startsWith('Loading')) { $('result').hidden = true; $('change-result').hidden = true; }
+  }
+
+  async function loadChange() {
+    const station = $('station').value;
+    if (!station) { status('No stations have been heard yet.'); return; }
+    const at = changeAt();
+    if (!at) { status('Pick the date of the change.'); return; }
+    if (at > Date.now() / 1000) { status('The change has to be in the past.'); return; }
+    const q = new URLSearchParams({ station, at, tz: TZ, cell: 500, same_route: $('same-route').checked });
+    if ($('period').value === 'now') q.set('until_now', 'true'); else q.set('days', $('period').value);
+    if (isNode(station)) q.set('match', $('match').value);
+    const my = ++seq;
+    status('Loading…');
+    try {
+      const d = await get(`api/compare/change?${q}`);
+      if (my !== seq) return;
+      DATA = d;
+      status('');
+      renderChange(d);
+    } catch (err) { if (my === seq) status(err.message, true); }
   }
 
   // ── rendering ──────────────────────────────────────────────────────────────
@@ -122,7 +194,10 @@
   }
 
   function render(d) {
+    if (d.kind === 'change') return renderChange(d);
     $('result').hidden = false;
+    $('change-result').hidden = true;
+    $('notes-wrap').hidden = false;
     const notes = [];
     let series, verdict;
     const name = { a: d.kind === 'mobiles' ? d.a.mobile : d.a, b: d.kind === 'mobiles' ? d.b.mobile : d.b };
@@ -238,15 +313,136 @@
   }
 
   function renderEvents(d) {
-    const devs = d.kind === 'mobiles' ? [d.a.mobile, d.b.mobile] : [d.a, d.b];
+    const devs = d.kind === 'change' ? [d.station] : d.kind === 'mobiles' ? [d.a.mobile, d.b.mobile] : [d.a, d.b];
+    const current = d.kind === 'change' ? changeNote() : null;
     $('events').innerHTML = d.events.length ? d.events.map(e => `<li><span class="muted">${new Date(e.ts * 1000).toLocaleString()}</span>
         <b>${esc(e.device)}</b> ${esc(e.text)} <span class="muted small">(${e.source === 'app' ? 'from the app' : 'added here'})</span>
+        ${current && current.id === e.id ? '<span class="small">(the change compared above)</span>'
+          : `<button class="link" data-change="${e.id}" data-device="${esc(e.device)}">Compare before and after</button>`}
         ${ME && (ME.role === 'admin' || ME.id === e.user_id) ? `<button class="link" data-del="${e.id}">delete</button>` : ''}</li>`).join('')
       : '<li class="muted">No notes in this period.</li>';
     $('ev-device').innerHTML = devs.map(x => `<option>${esc(x)}</option>`).join('');
     if (!$('ev-ts').value) {
       const n = new Date(); n.setMinutes(n.getMinutes() - n.getTimezoneOffset());
       $('ev-ts').value = n.toISOString().slice(0, 16);
+    }
+  }
+
+  // ── one station, before and after a change ─────────────────────────────────
+  const shortDay = ts => new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const span = side => `${shortDay(side.start)} to ${shortDay(side.end)}`;
+  const points = (a, b) => Math.round((a - b) * 100);
+
+  function renderChange(d) {
+    $('result').hidden = true;
+    $('change-result').hidden = false;
+    $('notes-wrap').hidden = false;
+    const node = d.station_kind === 'node';
+    const note = changeNote();
+    const noteText = note ? note.text : `Change on ${shortDay(d.at)}`;
+    $('change-title').textContent = node ? `What ${d.station} heard` : `Beacons from ${d.station} that got through`;
+    drawSlope($('slope'), d, noteText);
+
+    const b = d.before, a = d.after;
+    const unit = node ? 'transmissions' : 'beacons';
+    let verdict;
+    if (!b.sent || !a.sent) {
+      verdict = `Nothing to compare yet: ${num(b.sent)} ${unit} before the change and ${num(a.sent)} after.`;
+    } else if (Math.min(b.sent, a.sent) < 20) {
+      verdict = `Too little data to judge yet (${num(b.sent)} ${unit} before, ${num(a.sent)} after). Keep driving the route and check back.`;
+    } else {
+      const delta = points(a.pct, b.pct);
+      const lead = node
+        ? `After the change, ${esc(d.station)} heard ${pct(a.pct)} of the transmissions anyone heard from these squares`
+        : `After the change, ${pct(a.pct)} of beacons got through`;
+      const move = delta === 0 ? `, the same as before.` : `, ${delta > 0 ? 'up' : 'down'} from ${pct(b.pct)}.`;
+      const chance = d.p_value == null || delta === 0 ? '' : d.p_value < 0.05
+        ? ` A difference this size is unlikely to be chance (${pval(d.p_value)}).`
+        : ` That could still be chance (${pval(d.p_value)}); give it more time.`;
+      verdict = lead + move + chance;
+    }
+    $('change-verdict').innerHTML = verdict;
+
+    const notes = [`Before is ${span(b)}; after is ${span(a)}.`];
+    const sq = d.squares;
+    if (d.same_route) {
+      notes.push(sq.both
+        ? `Compared over the ${num(sq.both)} squares ${node ? 'heard from' : 'driven'} in both periods (${num(sq.before)} before, ${num(sq.after)} after).`
+        : `No squares were ${node ? 'heard from' : 'driven'} in both periods. Untick <b>Same ${node ? 'areas' : 'route'} only</b>, or pick a longer period.`);
+    }
+    const lenB = b.end - b.start, lenA = a.end - a.start;
+    if (lenA < lenB - 3600) notes.push(`The after period is still running: ${Math.max(1, Math.round(lenA / 86400))} of ${Math.round(lenB / 86400)} days so far.`);
+    if (!node) {
+      notes.push(d.exact ? `${num(d.exact)} beacons from transmit logs (exact); the rest estimated from gaps between packets heard.`
+        : 'No transmit log in these periods: lost beacons are estimated from gaps between packets heard.');
+    } else if (!d.dupes_feed) {
+      notes.push('Without the duplicates feed APRS-IS keeps only the first copy of a packet, so this station can look worse than it is.');
+    }
+    if (d.p_value != null && d.p_value < 0.05) notes.push('Anything else that changed between the periods (beacon rate, weather, a digi going down) shows up here too.');
+    $('change-notes').innerHTML = notes.map(n => `<li>${n}</li>`).join('');
+
+    const ser = ['before', 'after'].map(side => ({
+      side, name: side === 'before' ? 'Before' : 'After',
+      pts: d.days_series.filter(r => r.side === side).map(r => ({ t: r.t, v: r.pct, lo: r.lo, hi: r.hi, k: r.heard, n: r.sent })),
+    }));
+    const marks = [...d.events];
+    if (!note) marks.push({ ts: d.at, device: d.station, text: 'the change' });
+    drawChart($('change-chart'), ser, marks, 'day');
+
+    const item = r => {
+      const [h1, n1] = r.before, [h2, n2] = r.after;
+      const url = `https://www.openstreetmap.org/?mlat=${r.lat}&mlon=${r.lon}#map=15/${r.lat}/${r.lon}`;
+      return `<li><a href="${url}" target="_blank" rel="noopener">${r.lat.toFixed(3)}, ${r.lon.toFixed(3)}</a>
+        <span class="where-pct">${Math.round(h1 / n1 * 100)}% to ${Math.round(h2 / n2 * 100)}%</span>
+        <span class="muted small">${num(n1)} and ${num(n2)} ${unit}</span></li>`;
+    };
+    $('where-card').hidden = !d.better.length && !d.worse.length;
+    $('where-better').innerHTML = d.better.map(item).join('') || '<li class="muted">None</li>';
+    $('where-worse').innerHTML = d.worse.map(item).join('') || '<li class="muted">None</li>';
+    renderEvents(d);
+  }
+
+  // The signature element: a slopegraph from Before to After, the change between.
+  function drawSlope(box, d, noteText) {
+    box.innerHTML = '';
+    const W = Math.max(300, box.clientWidth), narrow = W < 520, H = narrow ? 230 : 250;
+    const side = narrow ? 84 : 150;
+    const m = { l: side, r: side, t: 50, b: 18 };
+    const xb = m.l, xa = W - m.r, xm = W / 2;
+    const y = v => m.t + (1 - v) * (H - m.t - m.b);
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'slope-svg' }, box);
+    const b = d.before, a = d.after;
+    box.setAttribute('aria-label', `Before the change ${pct(b.pct)}, after ${pct(a.pct)}.`);
+
+    for (const v of [0, 0.5, 1]) {
+      el('line', { x1: xb, x2: xa, y1: y(v), y2: y(v), class: 'slope-grid' }, svg);
+      el('text', { x: xm + 6, y: y(v) + 13, class: 'slope-axis' }, svg).textContent = `${v * 100}%`;
+    }
+    el('line', { x1: xm, x2: xm, y1: m.t - 8, y2: H - m.b, class: 'slope-change' }, svg);
+    const nt = el('text', { x: xm, y: 16, class: 'slope-note', 'text-anchor': 'middle' }, svg);
+    nt.textContent = noteText.length > (narrow ? 34 : 60) ? noteText.slice(0, narrow ? 33 : 59) + '…' : noteText;
+    el('text', { x: xm, y: 31, class: 'slope-axis', 'text-anchor': 'middle' }, svg).textContent = shortDay(d.at);
+
+    const ends = [['before', xb, b, 'end', -14], ['after', xa, a, 'start', 14]];
+    if (b.pct != null && a.pct != null) {
+      el('line', { x1: xb, y1: y(b.pct), x2: xa, y2: y(a.pct), class: 'slope-line' }, svg);
+      const delta = points(a.pct, b.pct);
+      const dt = el('text', { x: xm, y: (y(b.pct) + y(a.pct)) / 2 - 12, class: 'slope-delta', 'text-anchor': 'middle' }, svg);
+      dt.textContent = delta === 0 ? 'no change' : `${delta > 0 ? '+' : '−'}${Math.abs(delta)} point${Math.abs(delta) === 1 ? '' : 's'}`;
+    }
+    for (const [cls, x, s, anchor, dx] of ends) {
+      const label = cls === 'before' ? 'Before' : 'After';
+      if (s.pct == null) {
+        el('text', { x: x + dx, y: y(0.5), class: 'slope-sub', 'text-anchor': anchor }, svg).textContent = `${label}: no data`;
+        continue;
+      }
+      if (s.lo != null) el('line', { x1: x, x2: x, y1: y(s.hi), y2: y(s.lo), class: `slope-ci slope-ci-${cls}` }, svg);
+      el('circle', { cx: x, cy: y(s.pct), r: 7, class: `slope-pt pt-${cls}` }, svg);
+      const ty = Math.min(Math.max(y(s.pct), m.t + 22), H - m.b - 30);
+      el('text', { x: x + dx, y: ty + 2, class: 'slope-big', 'text-anchor': anchor }, svg).textContent = pct(s.pct);
+      el('text', { x: x + dx, y: ty + 20, class: 'slope-sub', 'text-anchor': anchor }, svg).textContent = label;
+      el('text', { x: x + dx, y: ty + 35, class: 'slope-sub', 'text-anchor': anchor }, svg)
+        .textContent = `${num(s.heard)} of ${num(s.sent)}`;
     }
   }
 
@@ -350,6 +546,17 @@
     } catch (err) { m.className = 'error'; m.textContent = err.message; }
   });
   $('events').addEventListener('click', async e => {
+    const c = e.target.closest('[data-change]');
+    if (c) {  // jump to the before/after comparison for this note
+      $('mode').value = 'change';
+      $('station').dataset.want = c.dataset.device;
+      $('change').dataset.want = `n${c.dataset.change}`;
+      fillStations();
+      await fillChanges();
+      load();
+      window.scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      return;
+    }
     const b = e.target.closest('[data-del]');
     if (!b) return;
     try { await send('DELETE', `api/events/${b.dataset.del}`); load(); }
@@ -358,8 +565,10 @@
 
   // ── start ──────────────────────────────────────────────────────────────────
   for (const id of CTRL) {
-    $(id).addEventListener('change', () => {
-      if (id === 'mode') fillStations();
+    $(id).addEventListener('change', async () => {
+      if (id === 'mode') { fillStations(); if (isChange()) await fillChanges(); }
+      if (id === 'station') await fillChanges();
+      if (id === 'change') syncMode();
       if (id === 'range' && $('range').value === 'custom') { range(); return; }
       load();
     });
@@ -369,7 +578,7 @@
 
   (async () => {
     readUrl();
-    for (const k of ['mode', 'range', 'bucket', 'match', 'from', 'to', 'sep', 'interval']) applyWant($(k));
+    for (const k of ['mode', 'range', 'bucket', 'match', 'from', 'to', 'sep', 'interval', 'period', 'change-at']) applyWant($(k));
     range();
     try {
       [STATIONS, MOBILES] = await Promise.all([get('api/stations'), get('api/mobiles')]);
@@ -385,6 +594,7 @@
       if (!ok) $('event-login').textContent = 'Notes can be added once your account is approved.';
     }
     fillStations();
+    if (isChange()) await fillChanges();
     load();
   })();
 })();

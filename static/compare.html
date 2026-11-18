@@ -23,11 +23,23 @@
         <select id="mode">
           <option value="mobiles">Two mobiles</option>
           <option value="nodes">Two igates / digis</option>
+          <option value="change">One station, before and after a change</option>
         </select>
       </label>
-      <label class="field"><span class="dot-a"></span> A <select id="a"></select></label>
-      <label class="field"><span class="dot-b"></span> B <select id="b"></select></label>
-      <label class="field">Time range
+      <label class="field" id="a-field"><span class="dot-a"></span> A <select id="a"></select></label>
+      <label class="field" id="b-field"><span class="dot-b"></span> B <select id="b"></select></label>
+      <label class="field" id="station-field" hidden>Station <select id="station"></select></label>
+      <label class="field" id="change-field" hidden>Change <select id="change"></select></label>
+      <label class="field" id="change-at-field" hidden>Changed on <input type="datetime-local" id="change-at"></label>
+      <label class="field" id="period-field" hidden>Period
+        <select id="period">
+          <option value="7" selected>A week either side</option>
+          <option value="14">Two weeks either side</option>
+          <option value="30">30 days either side</option>
+          <option value="now">From the change until now</option>
+        </select>
+      </label>
+      <label class="field" id="range-field">Time range
         <select id="range">
           <option value="30">Last 30 days</option>
           <option value="90" selected>Last 90 days</option>
@@ -37,7 +49,7 @@
           <option value="custom">Custom…</option>
         </select>
       </label>
-      <label class="field">Group by
+      <label class="field" id="bucket-field">Group by
         <select id="bucket">
           <option value="day">Day</option>
           <option value="week" selected>Week</option>
@@ -62,6 +74,13 @@
           Leave blank to estimate it.</span>
       </label>
     </div>
+    <div class="grid-form" id="change-opts" hidden>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="same-route" checked> <span id="same-route-text">Same route only</span></label>
+        <span class="muted small" id="same-route-help">Counts only squares driven in both periods, so a detour or a
+          new road doesn't look like a change.</span>
+      </div>
+    </div>
     <div class="grid-form" id="node-opts" hidden>
       <label class="field">Counts as heard
         <select id="match">
@@ -73,6 +92,32 @@
   </section>
 
   <p id="status" class="muted"></p>
+
+  <div id="change-result" hidden>
+    <section class="card">
+      <h2 id="change-title">Share of beacons heard</h2>
+      <div id="slope" class="slope" role="img"></div>
+      <p id="change-verdict" class="verdict"></p>
+      <ul id="change-notes" class="notes muted small"></ul>
+    </section>
+
+    <section class="card">
+      <h2>Day by day</h2>
+      <div class="chart-legend"><span><span class="dot-before"></span> Before</span><span><span class="dot-after"></span> After</span></div>
+      <div id="change-chart" class="chart" role="img"></div>
+      <p class="muted small">One point per day, over the same squares as above. Shaded bands are 95% confidence
+        intervals; the dashed line is the change.</p>
+    </section>
+
+    <section class="card" id="where-card" hidden>
+      <h2>Where it changed most</h2>
+      <p class="muted small">Squares with at least 3 beacons in each period. Each opens on OpenStreetMap.</p>
+      <div class="where">
+        <div><h3>Better after</h3><ul id="where-better" class="where-list"></ul></div>
+        <div><h3>Worse after</h3><ul id="where-worse" class="where-list"></ul></div>
+      </div>
+    </section>
+  </div>
 
   <div id="result" hidden>
     <section class="card">
@@ -110,10 +155,13 @@
       <div class="table-wrap"><table id="table" class="data"></table></div>
     </section>
 
+  </div>
+
+  <div id="notes-wrap" hidden>
     <section class="card">
       <h2>Device notes</h2>
-      <p class="muted small">Dated changes to either device (new antenna, moved, firmware), drawn on the chart so
-        before and after are easy to tell apart.</p>
+      <p class="muted small">Dated changes to a device (new antenna, moved, firmware), drawn on the charts. Pick one
+        with <em>Compare before and after</em> to see what it did.</p>
       <ul id="events" class="events"></ul>
       <form id="event-form" class="inline-form" hidden>
         <select id="ev-device"></select>

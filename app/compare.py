@@ -328,3 +328,108 @@ def compare_nodes(c, a: str, b: str, start: int, end: int, bucket: str = "week",
         "dupes_feed": dupes > 0, "bands": bands, "positions": pos,
         "events": events(c, [a, b], start, end),
     }
+
+
+# ── one station, before vs after a change ────────────────────────────────────
+CHANGE_MIN_BEACONS = 3   # a square needs this many beacons on both sides to list as changed
+
+
+def _side(heard: int, sent: int, start: int, end: int) -> dict:
+    ci = wilson(heard, sent)
+    return {"start": start, "end": end, "heard": heard, "sent": sent, "pct": _ratio(heard, sent),
+            "lo": ci[0] if ci else None, "hi": ci[1] if ci else None}
+
+
+def _node_cells(c, station, start, end, cell_m, match, day_of):
+    """Per square (of where each transmission was sent from): of the
+    transmissions anyone heard, how many this station heard, also per day."""
+    from .reliability import _cell
+    from . import grid
+    dlat, dlon = grid.cell_deg(cell_m)
+    expr, arg = ("heard_by = ?", station) if match == "first" else ("chain LIKE ?", f"% {station} %")
+    cells: dict = {}
+    days: dict = {}
+    for r in c.execute(f"SELECT MIN(ts) AS ts, MAX(lat) AS lat, MAX(lon) AS lon, MAX({expr}) AS h FROM packets "
+                       f"WHERE ts BETWEEN ? AND ? GROUP BY txid", (arg, start, end)):
+        k = _cell(r["lat"], r["lon"], dlat, dlon)
+        e = cells.setdefault(k, [0, 0])
+        e[0] += bool(r["h"])
+        e[1] += 1
+        d = days.setdefault(k, {}).setdefault(day_of(r["ts"]), [0, 0])
+        d[0] += bool(r["h"])
+        d[1] += 1
+    return cells, days
+
+
+def compare_change(c, station: str, at: int, days: int | None, cell_m: int = 500, tz_s: int = 0,
+                   same_route: bool = True, match: str = "first", now: int | None = None) -> dict:
+    """The same station before and after a dated change (new antenna, moved,
+    new firmware). days: length of each period; None = from the change until
+    now, with a before period just as long. same_route: only squares the
+    station was in during both periods, so a detour doesn't count as a change."""
+    import time
+    from . import grid
+    from .reliability import reliability
+    now = now or int(time.time())
+    span = days * 86400 if days else max(86400, now - at)
+    b0, b1, a0, a1 = at - span, at - 1, at, min(at + span, now)
+    row = c.execute("SELECT kind FROM stations WHERE callsign=? AND kind != 'mobile'", (station,)).fetchone()
+    kind = "node" if row else "mobile"
+    day_of = lambda ts: bucket_start(ts, "day", tz_s)  # noqa: E731
+    if kind == "mobile":
+        rb = reliability(c, b0, b1, cell_m, [station], None, True, day_of=day_of)
+        ra = reliability(c, a0, a1, cell_m, [station], None, True, day_of=day_of)
+        cb = {(x, y): [h, n] for x, y, h, n, *_ in rb["cells"]}
+        ca = {(x, y): [h, n] for x, y, h, n, *_ in ra["cells"]}
+        db, da = rb.get("by_day", {}), ra.get("by_day", {})
+        exact = sum(r[5] for r in rb["cells"] + ra["cells"])
+    else:
+        cb, db = _node_cells(c, station, b0, b1, cell_m, match, day_of)
+        ca, da = _node_cells(c, station, a0, a1, cell_m, match, day_of)
+        exact = 0
+    both = set(cb) & set(ca)
+    route_b = both if same_route else set(cb)
+    route_a = both if same_route else set(ca)
+
+    def total(cells, keys):
+        return sum(cells[k][0] for k in keys), sum(cells[k][1] for k in keys)
+
+    def series(by_day, keys, side):
+        out: dict[int, list[int]] = {}
+        for k in keys:
+            for d, (h, n) in by_day.get(k, {}).items():
+                e = out.setdefault(d, [0, 0])
+                e[0] += h
+                e[1] += n
+        rows = []
+        for d in sorted(out):
+            h, n = out[d]
+            ci = wilson(h, n)
+            rows.append({"t": d, "side": side, "heard": h, "sent": n, "pct": _ratio(h, n),
+                         "lo": ci[0] if ci else None, "hi": ci[1] if ci else None})
+        return rows
+
+    hb, nb = total(cb, route_b)
+    ha, na = total(ca, route_a)
+    dlat, dlon = grid.cell_deg(cell_m)
+    changed = []
+    for k in both:
+        (h1, n1), (h2, n2) = cb[k], ca[k]
+        if n1 >= CHANGE_MIN_BEACONS and n2 >= CHANGE_MIN_BEACONS:
+            changed.append({"lat": round((k[1] + 0.5) * dlat, 5), "lon": round((k[0] + 0.5) * dlon, 5),
+                            "before": [h1, n1], "after": [h2, n2], "delta": h2 / n2 - h1 / n1})
+    changed.sort(key=lambda r: r["delta"])
+    return {
+        "kind": "change", "station": station, "station_kind": kind, "at": at, "days": days,
+        "same_route": same_route, "cell_m": cell_m, "match": match,
+        "before": _side(hb, nb, b0, b1), "after": _side(ha, na, a0, a1),
+        "p_value": two_prop_p(ha, na, hb, nb),
+        "squares": {"both": len(both), "before": len(cb), "after": len(ca)},
+        "exact": exact,
+        "dupes_feed": c.execute("SELECT 1 FROM packets WHERE dupe=1 AND ts BETWEEN ? AND ? LIMIT 1",
+                                (b0, a1)).fetchone() is not None,
+        "days_series": series(db, route_b, "before") + series(da, route_a, "after"),
+        "better": [r for r in reversed(changed) if r["delta"] > 0][:5],
+        "worse": [r for r in changed if r["delta"] < 0][:5],
+        "events": events(c, [station], b0, a1),
+    }

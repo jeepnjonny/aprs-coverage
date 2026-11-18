@@ -329,3 +329,39 @@ fieldset.device legend { font-weight: 600; padding: 0 4px; }
 .events { list-style: none; padding: 0; margin: 6px 0; }
 .events li { margin: 4px 0; }
 @media (max-width: 640px) { .tile-value { font-size: 26px; } .hbar { width: 70px; } }
+
+/* compare: one station before and after a change. Before is the neutral past,
+   after takes the page's blue. The slopegraph is the one bold element. */
+:root { --series-before: #8a939c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --series-before: #8b949e; } }
+:root[data-theme="dark"] { --series-before: #8b949e; }
+.dot-before, .dot-after { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--series-before); }
+.dot-after { background: var(--series-a); }
+.chart-svg .line-before, .chart-svg .pt-before { stroke: var(--series-before); }
+.chart-svg .line-after, .chart-svg .pt-after { stroke: var(--series-a); }
+.chart-svg .band-before { fill: var(--series-before); }
+.chart-svg .band-after { fill: var(--series-a); }
+.slope { width: 100%; }
+.slope-svg { display: block; max-width: 100%; height: auto; overflow: visible; }
+.slope-grid { stroke: var(--border); stroke-width: 1; opacity: .6; }
+.slope-axis { fill: var(--muted); font-size: 11px; }
+.slope-change { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4; }
+.slope-note { fill: var(--text); font-size: 13px; font-weight: 600; }
+.slope-line { stroke: var(--series-a); stroke-width: 3; stroke-linecap: round; }
+.slope-ci { stroke-width: 2; stroke-linecap: round; opacity: .45; }
+.slope-ci-before { stroke: var(--series-before); }
+.slope-ci-after { stroke: var(--series-a); }
+.slope-pt { stroke: var(--bg); stroke-width: 2; }
+.slope-pt.pt-before { fill: var(--series-before); }
+.slope-pt.pt-after { fill: var(--series-a); }
+.slope-big { fill: var(--text); font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.slope-sub { fill: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.slope-delta { fill: var(--text); font-size: 14px; font-weight: 600; paint-order: stroke; stroke: var(--panel); stroke-width: 4px; }
+.where { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 4px 24px; }
+.where h3 { font-size: 14px; margin: 6px 0 4px; }
+.where-list { list-style: none; padding: 0; margin: 0; }
+.where-list li { padding: 5px 0; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; }
+.where-pct { font-weight: 600; font-variant-numeric: tabular-nums; }
+.compare .link:focus-visible, .compare a:focus-visible, .compare select:focus-visible, .compare input:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 640px) { .slope-big { font-size: 22px; } }

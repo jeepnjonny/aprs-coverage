@@ -34,7 +34,7 @@ def _cell(lat, lon, dlat, dlon):
 
 
 def reliability(c, start: int, end: int, cell_m: int, mobiles: list[str] | None,
-                heard_ok: set[int] | None, estimates: bool = True) -> dict:
+                heard_ok: set[int] | None, estimates: bool = True, day_of=None) -> dict:
     """Per square: beacons sent and heard, split exact/estimated.
 
     mobiles: concrete mobile keys to include (None = all).
@@ -59,8 +59,14 @@ def reliability(c, start: int, end: int, cell_m: int, mobiles: list[str] | None,
 
     cells: dict[tuple[int, int], list] = {}  # [heard, sent, exact_heard, exact_sent, last_ts]
 
+    by_day: dict[tuple[int, int], dict[int, list[int]]] = {}  # only with day_of: per square, per day [heard, sent]
+
     def add(lat, lon, ts, got, exact):
         k = _cell(lat, lon, dlat, dlon)
+        if day_of:
+            d = by_day.setdefault(k, {}).setdefault(day_of(ts), [0, 0])
+            d[0] += got
+            d[1] += 1
         e = cells.setdefault(k, [0, 0.0, 0, 0, 0])
         e[0] += got
         e[1] += 1
@@ -119,7 +125,8 @@ def reliability(c, start: int, end: int, cell_m: int, mobiles: list[str] | None,
                     int(p["ts"] + f * gap), 0, False)
 
     out = [[x, y, e[0], int(e[1]), e[2], e[3], e[4]] for (x, y), e in cells.items()]
-    return {
+    extra = {"by_day": by_day} if day_of else {}
+    return {**extra,
         # [x, y, heard, sent, exact heard, exact sent, last ts]
         "cells": out,
         "sent": sum(r[3] for r in out), "heard": sum(r[2] for r in out),

@@ -304,6 +304,15 @@ test on the transmissions only one of them heard. This needs the
 and the page says so. Sites see different traffic, so for a device test swap the two between
 sites every week or two and add a note at each swap.
 
+**One station, before and after a change.** Pick a station and a change (one of its device notes,
+or a date) and a period either side (a week, two weeks, 30 days, or from the change until now). A
+slopegraph shows the share heard before and after, with a significance test, a day-by-day chart
+and the squares that got most better or worse. *Same route only* (on by default) counts only
+squares driven in both periods, so a detour doesn't look like a change. For a mobile this is the
+share of its beacons that got through (exact from transmit logs, else estimated); for an igate or
+digi, the share of the transmissions anyone heard from those squares that it heard. Each device
+note has a *Compare before and after* link. `GET /api/compare/change`, `GET /api/events?device=`.
+
 **Device notes** are added on the compare page by a device's owner (or an admin), or uploaded by
 the app as `event` entries.
 

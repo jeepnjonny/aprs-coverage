@@ -411,3 +411,58 @@ def test_reliability_counts_packet_before_its_log_arrives(client):
         {"type": "tx", "ts": T + 4 * 30, "packet": tx_line(4)}]})
     d = client.get("/api/reliability", params={"start": T - 10, "end": T + 3600}).json()
     assert (d["sent"], d["heard"], d["exact"]) == (5, 1, 5)
+
+
+# ── before / after a change ──────────────────────────────────────────────────
+def _drive(ing, call, t0, keep, lon0=-116.5, n=20, igate="KG7KMV-13", lat=43.6):
+    """Drive east, 60 s beacons ~1 km apart; keep(i) says which are heard."""
+    for i in range(n):
+        if keep(i):
+            ing.handle_line(f"{call}>APLRT1,WIDE1-1,qAR,{igate}:{_pos(lat, lon0 + i * 0.0124)}t{t0}i{i}", now=t0 + i * 60)
+
+
+def test_change_mobile_same_route(client):
+    register(client)
+    ing = client.ingester
+    at = T
+    for d in range(1, 4):  # before: 3 days, every other beacon lost from i=6 on
+        _drive(ing, "K7ABC-7", at - d * 86400, lambda i: i < 6 or i % 2 == 0)
+    for d in range(0, 3):  # after: everything heard, plus a detour on another road
+        _drive(ing, "K7ABC-7", at + 3600 + d * 86400, lambda i: True)
+        _drive(ing, "K7ABC-7", at + 7200 + d * 86400, lambda i: True, lat=44.2)
+    d = client.get("/api/compare/change", params={"station": "K7ABC-7", "at": at, "days": 7}).json()
+    b, a = d["before"], d["after"]
+    assert d["station_kind"] == "mobile" and a["pct"] == 1.0 and b["pct"] < 0.9
+    assert d["p_value"] < 0.05
+    assert d["squares"]["after"] > d["squares"]["both"]  # the detour isn't counted...
+    # ...only the route: 20 beacons a day for 3 days, less the last one (never
+    # placed before the change: the beacon lost after the last packet heard)
+    assert a["sent"] == 57
+    assert d["better"] and not d["worse"] and d["better"][0]["delta"] > 0
+    assert {r["side"] for r in d["days_series"]} == {"before", "after"}
+    wide = client.get("/api/compare/change", params={"station": "K7ABC-7", "at": at, "same_route": "false"}).json()
+    # with the detour and the whole route, plus the silent 40-minute drive between
+    # the two roads, which counts as lost beacons along the way
+    assert wide["after"]["sent"] == 120 + 3 * 40
+    assert client.get("/api/compare/change", params={"station": "K7ABC-7", "at": 9_999_999_999}).status_code == 422
+
+
+def test_change_node(client):
+    register(client)
+    ing = client.ingester
+    at = T
+    # before: KJ7NYE-10 heard a third; after its antenna change, two thirds
+    for day in (-2, -1, 1, 2):  # in time order, as the ingester sees them
+        tag = f"{'b' if day < 0 else 'a'}{abs(day)}"
+        for i in range(30):
+            t = at + day * 86400 + i * 60
+            line = is_line(i, igate="KG7KMV-13").replace("n%d" % i, f"{tag}n{i}")
+            ing.handle_line(line, now=t)
+            if (i % 3 == 0) == (day < 0):
+                ing.handle_line(line.replace("KG7KMV-13", "KJ7NYE-10"), now=t + 1, dupe=True)
+    client.post("/api/events", json={"device": "KJ7NYE-10", "ts": at, "text": "new antenna"}, headers=H)
+    d = client.get("/api/compare/change", params={"station": "KJ7NYE-10", "at": at, "days": 7}).json()
+    assert d["station_kind"] == "node"
+    assert (d["before"]["heard"], d["before"]["sent"]) == (20, 60)
+    assert (d["after"]["heard"], d["after"]["sent"]) == (40, 60)
+    assert [e["text"] for e in d["events"]] == ["new antenna"]

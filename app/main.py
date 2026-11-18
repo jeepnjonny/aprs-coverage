@@ -463,10 +463,45 @@ def api_compare_nodes(
         return compare.compare_nodes(c, a, b, start, end, bucket, tz * 60, match, _csv(mobiles) or None)
 
 
+@app.get("/api/compare/change")
+def api_compare_change(
+    station: str,
+    at: int,
+    days: int | None = Query(7, ge=1, le=365, description="days on each side; omit for 'until now'"),
+    until_now: bool = False,
+    same_route: bool = True,
+    cell: int = 500,
+    tz: int = Query(0, ge=-840, le=840),
+    match: str = Query("first", pattern="^(first|any)$"),
+):
+    """One station before and after a dated change. For a mobile: share of its
+    beacons that reached APRS-IS. For an igate/digi: share of the
+    transmissions anyone heard that it heard."""
+    station = station.strip().upper()
+    now = int(time.time())
+    if not station:
+        raise HTTPException(422, "Pick a station")
+    if not 0 < at < now:
+        raise HTTPException(422, "The change must be in the past")
+    cell = _cell_size(cell)
+    with db.session() as c:
+        return compare.compare_change(c, station, at, None if until_now else days, cell, tz * 60,
+                                      same_route, match, now)
+
+
 class EventIn(BaseModel):
     device: str
     ts: int
     text: str
+
+
+@app.get("/api/events")
+def list_events(device: str, limit: int = Query(50, ge=1, le=500)):
+    """A device's notes, newest first (public, like the comparisons)."""
+    with db.session() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT id, device, ts, text, source, user_id FROM device_events WHERE device=? ORDER BY ts DESC LIMIT ?",
+            (device.strip().upper(), limit))]
 
 
 @app.post("/api/events")
