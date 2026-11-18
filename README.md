@@ -154,7 +154,8 @@ cd /opt/aprs-coverage-src
 sudo bash setup.sh
 
 # 3. Set the APRS-IS login name. Use your callsign with an SSID no other station
-#    uses, for example K7SWI-CV. It is read-only, so no passcode is needed.
+#    uses, for example K7ABC-CV. It is read-only, so no passcode is needed.
+#    The feed stays off until this is set.
 sudo nano /srv/aprs-coverage/.env
 sudo systemctl restart aprs-coverage
 ```
@@ -367,7 +368,7 @@ full list. Restart the service after changing them.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `APRS_LOGIN` | (none) | APRS-IS login name, e.g. `K7SWI-CV`. Required. |
+| `APRS_LOGIN` | (none) | APRS-IS login name, e.g. `K7ABC-CV`. Required; the feed stays off until it is set. |
 | `APRS_SERVER` / `APRS_PORT` | `noam.aprs2.net` / `14580` | Default APRS-IS server (North America pool; `rotate.aprs2.net` is worldwide). Overridden by the admin page's feed settings. The node-config connection always uses this one. |
 | `APRS_ENABLED` | `1` | `0` turns the feed off (map still works) |
 | `DB_PATH` | `/srv/aprs-coverage/data/coverage.sqlite` | Database file |
