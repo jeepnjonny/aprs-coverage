@@ -4,13 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
-  <title>APRS Coverage Account</title>
+  <title>Account · APRS Coverage</title>
   <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
 <main class="admin">
   <header>
-    <h1>APRS Coverage</h1>
+    <h1>Account</h1>
     <span class="head-user"><a href="./">← Map</a> <span id="whoami" class="muted small"></span>
       <button id="logout" class="btn secondary" hidden>Log out</button></span>
   </header>
@@ -21,7 +21,7 @@
       <label class="field">Username <input type="text" id="username" autocomplete="username" autocapitalize="off"
         spellcheck="false" required></label>
       <label class="field">Password <input type="password" id="password" autocomplete="current-password" required></label>
-      <button class="btn">Log in</button> <span id="login-err" class="error"></span>
+      <button class="btn">Log in</button> <span id="login-err" aria-live="polite" class="error"></span>
     </form>
     <p class="muted">Run an igate, digipeater or tracker in the area? <a href="#join">Create an account</a>
       to add it to the map. An admin reviews each sign-up first.</p>
@@ -51,7 +51,7 @@
       <h3>Your devices</h3>
       <div id="j-devices"></div>
       <button type="button" class="btn secondary" id="j-add">Add another device</button>
-      <div class="form-end"><button class="btn">Submit for approval</button> <span id="join-err" class="error"></span></div>
+      <div class="form-end"><button class="btn">Submit for approval</button> <span id="join-err" aria-live="polite" class="error"></span></div>
     </form>
     <p class="muted small">Already have an account? <a href="#login">Log in</a></p>
   </section>
@@ -102,7 +102,7 @@
           shows every igate and digi that heard a packet, not only the first one. Copies of one packet count
           once in packet totals, and once for each station that heard it. Read-only (passcode -1), no filter.
           Use a login different from the coverage feed's.</p>
-        <button class="btn">Save and reconnect</button> <span id="feeds-msg"></span>
+        <button class="btn">Save and reconnect</button> <span id="feeds-msg" aria-live="polite"></span>
       </form>
     </section>
 
@@ -145,7 +145,7 @@
         <p class="muted small" id="kind-help"></p>
         <button class="btn" id="s-save">Add station</button>
         <button type="button" class="btn secondary" id="s-cancel" hidden>Cancel edit</button>
-        <span id="form-msg"></span>
+        <span id="form-msg" aria-live="polite"></span>
       </form>
     </section>
 
@@ -209,13 +209,13 @@
           their own igates and digis over the air, sending from their own callsign</label>
         <button class="btn">Save</button>
         <button type="button" class="btn secondary" id="u-cancel">Close</button>
-        <span id="u-msg"></span>
+        <span id="u-msg" aria-live="polite"></span>
       </form>
       <form id="u-pw-form" class="grid-form">
         <label class="field">Set a new password <input type="password" id="u-pw" autocomplete="new-password"
           minlength="10" required placeholder="10+ characters"></label>
         <div class="field"><button class="btn secondary">Set password</button>
-          <span class="muted small">Logs them out everywhere.</span> <span id="u-pw-msg"></span></div>
+          <span class="muted small">Logs them out everywhere.</span> <span id="u-pw-msg" aria-live="polite"></span></div>
       </form>
     </section>
     <section class="card">
@@ -247,7 +247,7 @@
         <div id="my-fields"></div>
         <button class="btn" id="my-save">Submit for approval</button>
         <button type="button" class="btn secondary" id="my-cancel" hidden>Cancel edit</button>
-        <span id="my-msg"></span>
+        <span id="my-msg" aria-live="polite"></span>
       </form>
     </section>
     </div>
@@ -346,7 +346,7 @@
       </div>
       <p class="muted small" id="lg-desc"></p>
       <div id="lg-view" class="log-view" role="log" aria-live="off" tabindex="0"></div>
-      <p class="small error" id="lg-err"></p>
+      <p class="small error" id="lg-err" aria-live="polite"></p>
     </section>
     </div>
 
@@ -360,7 +360,7 @@
           <label class="field">Name <input type="text" id="a-name" maxlength="80" autocomplete="name"></label>
           <label class="field">Email <input type="email" id="a-email" maxlength="120" autocomplete="email"></label>
         </div>
-        <button class="btn">Save</button> <span id="acct-msg"></span>
+        <button class="btn">Save</button> <span id="acct-msg" aria-live="polite"></span>
       </form>
     </section>
     <section class="card">
@@ -368,7 +368,7 @@
       <form id="pw-form" class="grid-form">
         <label class="field">Current <input type="password" id="pw-cur" autocomplete="current-password" required></label>
         <label class="field">New (10+ chars) <input type="password" id="pw-new" autocomplete="new-password" minlength="10" required></label>
-        <div class="field"><button class="btn">Change</button> <span id="pw-msg"></span></div>
+        <div class="field"><button class="btn">Change</button> <span id="pw-msg" aria-live="polite"></span></div>
       </form>
     </section>
     <section class="card" id="keys-card" hidden>
@@ -380,7 +380,7 @@
         <tbody id="keys-body"></tbody></table>
       <form id="key-form" class="inline-form">
         <input type="text" id="key-name" maxlength="60" placeholder="Name, e.g. Pixel phone">
-        <button class="btn">New key</button> <span id="key-msg"></span>
+        <button class="btn">New key</button> <span id="key-msg" aria-live="polite"></span>
       </form>
       <div id="key-new" class="key-new" hidden>
         <p class="small">Copy this key into the app now. It won't be shown again.</p>
@@ -390,7 +390,7 @@
     <section class="card" id="withdraw-card" hidden>
       <h2>Withdraw sign-up</h2>
       <p class="muted small">Deletes your account and the devices you submitted.</p>
-      <button class="btn danger" id="withdraw">Withdraw</button> <span id="withdraw-msg"></span>
+      <button class="btn danger" id="withdraw">Withdraw</button> <span id="withdraw-msg" aria-live="polite"></span>
     </section>
     </div>
   </div>

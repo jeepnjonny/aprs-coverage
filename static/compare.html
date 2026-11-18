@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Compare Stations</title>
+  <title>Compare Stations · APRS Coverage</title>
   <meta name="description" content="Compare two APRS mobiles, or two igates/digipeaters, over weeks or months of real packets.">
   <link rel="stylesheet" href="static/style.css">
 </head>
@@ -91,7 +91,7 @@
     </div>
   </section>
 
-  <p id="status" class="muted"></p>
+  <p id="status" aria-live="polite" class="muted"></p>
 
   <div id="change-result" hidden>
     <section class="card">
@@ -167,7 +167,7 @@
         <select id="ev-device"></select>
         <input type="datetime-local" id="ev-ts" required>
         <input type="text" id="ev-text" maxlength="300" placeholder="e.g. swapped to a 5/8 wave antenna" required>
-        <button class="btn">Add note</button> <span id="ev-msg"></span>
+        <button class="btn">Add note</button> <span id="ev-msg" aria-live="polite"></span>
       </form>
       <p id="event-login" class="muted small"><a href="admin">Log in</a> to add notes to your own devices.</p>
     </section>

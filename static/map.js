@@ -4,8 +4,9 @@
 
   // Hues kept well apart so no two read as "the same colour" on the map. No
   // reds: red is reserved for the outline of squares where beacons were lost.
-  const PALETTE = ['#2f81f7', '#2da44e', '#f2d024', '#8250df', '#e85aad',
-                   '#1fb6c9', '#f0883e', '#8b5a2b', '#1f3a93', '#9acd32', '#4b0082'];
+  // (Yellow and yellow-green washed out on light tiles; indigo and navy merged in dark mode.)
+  const PALETTE = ['#2f81f7', '#2da44e', '#bf8700', '#8250df', '#e85aad',
+                   '#1fb6c9', '#f0883e', '#8b5a2b', '#1f3a93', '#0b7a75'];
   const FAIL_RED = '#d1242f';
   // Reliability: share of beacons that reached APRS-IS. Diverging red (lost) to
   // blue (heard) with a gray middle; checked for colour-blind separation.
@@ -46,6 +47,9 @@
   const BASEMAPS = {
     osm: () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }),
+    osmdark: () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, className: 'tiles-dark',
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }),
     otm: () => L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
       maxZoom: 17, attribution: 'Map data &copy; OpenStreetMap contributors, SRTM | Style &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)' }),
     usgs: () => L.tileLayer('https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}', {
@@ -570,18 +574,31 @@
         <td><span class="swatch" style="background:${keyColor(r.callsign)}"></span> ${nameHtml(r.callsign)}${r.registered ? '' : ' <span class="muted">*</span>'}</td>
         <td>${r.heard_direct}</td><td>${r.cells}</td><td>${r.max_range_km ?? '—'}</td><td>${r.gated}</td><td>${ago(r.last_heard)}</td></tr>`;
     }).join('') || '<tr><td colspan="6" class="muted">No packets in range.</td></tr>';
-    tb.querySelectorAll('tr.clickable').forEach(tr => tr.addEventListener('click', () => {
-      const st = byCall[tr.dataset.call];
-      if (st) map.flyTo([st.lat, st.lon], Math.max(map.getZoom(), 12));
-    }));
+    tb.querySelectorAll('tr.clickable').forEach(tr => {
+      const go = () => {
+        const st = byCall[tr.dataset.call];
+        if (st) map.flyTo([st.lat, st.lon], Math.max(map.getZoom(), 12));
+      };
+      tr.tabIndex = 0;  // reachable by keyboard; Enter or Space zooms like a click
+      tr.setAttribute('aria-label', `Zoom to ${stationName(tr.dataset.call)}`);
+      tr.addEventListener('click', go);
+      tr.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
+    });
     $('mobile-stats').querySelector('tbody').innerHTML = STATS.mobiles.map(r =>
       `<tr><td>${nameHtml(r.mobile)}</td><td>${r.packets}</td><td>${r.cells}</td><td>${ago(r.last)}</td></tr>`).join('')
       || '<tr><td colspan="4" class="muted">No packets in range.</td></tr>';
   }
 
   let loadSeq = 0;
+  function showError(text) {
+    const el = $('map-error');
+    el.textContent = text;
+    el.hidden = !text;
+  }
   async function refresh() {
     const seq = ++loadSeq;
+    $('panel').setAttribute('aria-busy', 'true');
+    $('loading').hidden = false;
     try {
       const [cov, fails, rel] = await Promise.all([
         getJSON('api/coverage?' + queryParams()),
@@ -593,8 +610,11 @@
       RELI = rel;
       FAILS = fails && { ...fails, byKey: new Map(fails.cells.map(c => [`${c[0]},${c[1]}`, c.slice(2)])) };
       renderCells();
+      showError('');
     } catch (e) {
-      $('summary').textContent = 'Failed to load coverage: ' + e.message;
+      if (seq === loadSeq) showError('Could not load coverage: ' + e.message);
+    } finally {
+      if (seq === loadSeq) { $('panel').removeAttribute('aria-busy'); $('loading').hidden = true; }
     }
     loadStats();
   }
@@ -770,10 +790,15 @@
       save(); buildFilters(); refresh();
     }));
 
-    document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach(x => { x.classList.toggle('active', x === t); x.setAttribute('aria-selected', x === t); });
-      document.querySelectorAll('.tab-body').forEach(b => { b.hidden = b.id !== 'tab-' + t.dataset.tab; });
-    }));
+    const tabs = [...document.querySelectorAll('.tab')];
+    const selectTab = name => {
+      tabs.forEach(x => { x.classList.toggle('active', x.dataset.tab === name); x.setAttribute('aria-selected', x.dataset.tab === name); });
+      document.querySelectorAll('.tab-body').forEach(b => { b.hidden = b.id !== 'tab-' + name; });
+      rovingTabindex(tabs);
+    };
+    tabs.forEach(t => t.addEventListener('click', () => selectTab(t.dataset.tab)));
+    wireTabs(tabs, t => $('tab-' + t.dataset.tab), selectTab);
+    rovingTabindex(tabs);
 
     const toggle = $('panel-toggle');
     if (window.matchMedia('(max-width: 640px)').matches) { $('panel').classList.add('collapsed'); toggle.setAttribute('aria-expanded', 'false'); }
@@ -783,6 +808,32 @@
     });
     syncVisibility();
   }
+
+  // Tabs as screen readers and keyboards expect: each tab names its panel,
+  // only the selected tab is in the Tab order, and arrow keys / Home / End move
+  // between tabs (selecting as they go).
+  function wireTabs(tabs, panelOf, select) {
+    for (const t of tabs) {
+      const p = panelOf(t);
+      t.id = t.id || `tab-btn-${t.dataset.tab}`;
+      p.id = p.id || `pane-${t.dataset.tab}`;
+      p.setAttribute('role', 'tabpanel');
+      p.setAttribute('aria-labelledby', t.id);
+      t.setAttribute('aria-controls', p.id);
+      t.addEventListener('keydown', e => {
+        const live = tabs.filter(x => !x.hidden);
+        const i = live.indexOf(t);
+        const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: live.length - 1 }[e.key];
+        if (to === undefined) return;
+        e.preventDefault();
+        const next = live[(to + live.length) % live.length];
+        select(next.dataset.tab);
+        next.focus();
+      });
+    }
+  }
+  // Keep tabindex in step with aria-selected (call after selecting).
+  const rovingTabindex = tabs => tabs.forEach(t => { t.tabIndex = t.getAttribute('aria-selected') === 'true' ? 0 : -1; });
 
   // ── account link: "Join / Log in", or where a logged-in user manages things ──
   fetch('api/me').then(r => r.json()).then(({ user }) => {
@@ -823,5 +874,5 @@
         if (STATIONS.map(s => s.callsign).join() !== before) { buildFilters(); refresh(); }
       } catch {}
     }, 300000);
-  })().catch(e => { $('summary').textContent = 'Failed to start: ' + e.message; });
+  })().catch(e => showError('The map could not start: ' + e.message + '. Try reloading the page.'));
 })();
