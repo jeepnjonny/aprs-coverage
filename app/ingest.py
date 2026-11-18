@@ -11,6 +11,7 @@ Both feeds' server settings are kept in the database and edited on the admin pag
 """
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import time
 from collections import Counter
@@ -160,7 +161,7 @@ class FeedConn:
 
     async def run(self, target, on_line) -> None:
         """target() returns (host, port, login line), or a string saying why
-        not to connect. on_line(line) handles each packet line."""
+        not to connect. await on_line(line) handles each packet line."""
         self._loop = asyncio.get_running_loop()
         backoff = BACKOFF_MIN_S
         while True:
@@ -219,7 +220,7 @@ class FeedConn:
                     if name and self.on_server:
                         self.on_server(name)
                     continue
-                on_line(line)
+                await on_line(line)
         finally:
             self.connected = False
             writer.close()
@@ -240,6 +241,11 @@ class Ingester:
         self.dupes.on_server = self._set_own_server
         self.own_server = ""
         self.active_filter = ""
+        self._loop: asyncio.AbstractEventLoop | None = None
+        # Packet handling (parsing and SQLite writes) runs on this one thread,
+        # in arrival order, so a slow or locked database never stalls the event
+        # loop (live streams, remote config, every async request).
+        self._db = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest-db")
         self.last_packet_ts: int | None = None
         self.counts = Counter()
 
@@ -336,6 +342,10 @@ class Ingester:
                 pass
 
     def _broadcast(self, event: dict) -> None:
+        """Called from the packet thread; asyncio queues belong to the loop."""
+        _on_loop(self._loop, lambda: self._fan_out(event))
+
+    def _fan_out(self, event: dict) -> None:
         for q in list(self.subscribers):
             try:
                 q.put_nowait(event)
@@ -410,27 +420,28 @@ class Ingester:
         ev = {k: r[k] for k in ("ts", "mobile", "lat", "lon", "igate", "heard_by", "hops")}
         self._broadcast({**ev, "dupe": dupe})
 
-    def _on_main_line(self, line: str) -> None:
+    async def _handle_off_loop(self, line: str, dupe: bool) -> str:
         try:
-            kind = self.handle_line(line)
+            return await asyncio.get_running_loop().run_in_executor(
+                self._db, lambda: self.handle_line(line, dupe=dupe))
         except Exception:
-            kind = "error"
-            log.exception("failed to handle line: %r", line)
+            log.exception("failed to handle %s: %r", "duplicate" if dupe else "line", line)
+            return "error"
+
+    async def _on_main_line(self, line: str) -> None:
+        kind = await self._handle_off_loop(line, dupe=False)
         aprs_log.add("rx", "feed", line, kind)
 
-    def _on_dupe_line(self, line: str) -> None:
+    async def _on_dupe_line(self, line: str) -> None:
         line = strip_dupe_prefix(line)
-        try:
-            kind = self.handle_line(line, dupe=True)
-        except Exception:
-            kind = "error"
-            log.exception("failed to handle duplicate: %r", line)
+        kind = await self._handle_off_loop(line, dupe=True)
         # The duplicates feed is unfiltered, so only log what concerns us.
         if kind != "ignore":
             aprs_log.add("rx", "dupes", line, kind)
 
     # ── connection loops ─────────────────────────────────────────────────────
     async def run(self) -> None:
+        self._loop = asyncio.get_running_loop()
         # Startup reads can be slow on a big database; keep them off the loop.
         self.registry = await asyncio.to_thread(load_registry)
         self.feeds = await asyncio.to_thread(load_feeds)

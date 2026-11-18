@@ -144,3 +144,38 @@ def test_security_headers(client):  # noqa: F811
 def test_absurd_timestamps_are_clamped(client):  # noqa: F811
     assert client.get("/api/coverage", params={"start": -5, "end": 10**30}).status_code in (200, 422)
     assert client.get("/api/coverage", params={"start": 0, "end": 2**63}).status_code in (200, 422)
+
+
+def test_packets_are_handled_off_the_loop_and_broadcast_on_it():
+    async def go():
+        ing = ingest.Ingester()
+        ing._loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        seen = {}
+
+        def handle_line(line, now=None, dupe=False):
+            seen["thread"] = threading.get_ident()
+            ing._broadcast({"mobile": "K7ABC-9", "line": line})
+            return "accept"
+
+        ing.handle_line = handle_line
+        q = ing.subscribe()
+        await ing._on_main_line("K7ABC-9>APRS:x")
+        ev = await asyncio.wait_for(q.get(), 1)
+        assert seen["thread"] != loop_thread
+        assert ev["line"] == "K7ABC-9>APRS:x"
+
+    asyncio.run(go())
+
+
+def test_a_failing_line_is_logged_as_error_not_raised():
+    async def go():
+        ing = ingest.Ingester()
+
+        def boom(line, now=None, dupe=False):
+            raise ValueError("bad")
+
+        ing.handle_line = boom
+        assert await ing._handle_off_loop("x", dupe=False) == "error"
+
+    asyncio.run(go())
