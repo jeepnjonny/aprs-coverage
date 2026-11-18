@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, field_validator
 
 from . import auth, compare, config, db, devicelog, grid, ingest, logbuf, reliability, remotecfg
@@ -84,8 +85,24 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "Content-Security-Policy": "frame-ancestors 'none'",
-    "Referrer-Policy": "same-origin",
+    # Scripts only from here and the Leaflet CDN (no inline script). Inline
+    # style attributes are allowed: the pages build swatches with them. Images
+    # are the base-map tile servers in static/map.js.
+    "Content-Security-Policy": "; ".join([
+        "default-src 'self'",
+        "script-src 'self' https://unpkg.com",
+        "style-src 'self' 'unsafe-inline' https://unpkg.com",
+        "img-src 'self' data: https://unpkg.com https://tile.openstreetmap.org https://*.tile.opentopomap.org "
+        "https://basemap.nationalmap.gov",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    ]),
+    # Cross-origin requests carry only the site's origin. Not "same-origin":
+    # OpenStreetMap's tile policy requires a Referer, and refuses tiles without.
+    "Referrer-Policy": "strict-origin-when-cross-origin",
 }
 
 
@@ -408,8 +425,30 @@ def api_status():
     return {k: s[k] for k in ("enabled", "connected", "last_packet_ts")}
 
 
+# Live streams hold a connection open for up to an hour, and the app runs as
+# one worker, so cap how many one address (and everyone together) may hold.
+LIVE_PER_IP, LIVE_TOTAL = 6, 300
+_live_by_ip: dict[str, int] = defaultdict(int)
+
+
 @app.get("/api/live")
 async def api_live(request: Request):
+    ip = auth.client_ip(request)
+    if _live_by_ip[ip] >= LIVE_PER_IP or sum(_live_by_ip.values()) >= LIVE_TOTAL:
+        if not _live_by_ip[ip]:
+            del _live_by_ip[ip]
+        raise HTTPException(429, "Too many live connections")
+    _live_by_ip[ip] += 1  # this handler runs on the event loop, so no lock needed
+    released = False
+
+    def release():  # from the stream's end or the response's background task, whichever runs
+        nonlocal released
+        if not released:
+            released = True
+            _live_by_ip[ip] -= 1
+            if _live_by_ip[ip] <= 0:
+                del _live_by_ip[ip]
+
     async def stream():
         q = ingester.subscribe()
         try:
@@ -426,8 +465,9 @@ async def api_live(request: Request):
                     yield ": ping\n\n"
         finally:
             ingester.unsubscribe(q)
+            release()
 
-    return StreamingResponse(stream(), media_type="text/event-stream",
+    return StreamingResponse(stream(), media_type="text/event-stream", background=BackgroundTask(release),
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 

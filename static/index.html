@@ -165,14 +165,7 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script>
-    // The map library comes from a CDN. If it didn't load, say so instead of a blank page.
-    if (!window.L) {
-      const e = document.getElementById('map-error');
-      e.textContent = "The map library couldn't be loaded (network or content blocker). Try reloading the page.";
-      e.hidden = false;
-    }
-  </script>
+  <script src="static/leaflet-check.js"></script>
   <script src="static/map.js"></script>
 </body>
 </html>

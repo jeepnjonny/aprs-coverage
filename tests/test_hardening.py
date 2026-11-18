@@ -179,3 +179,24 @@ def test_a_failing_line_is_logged_as_error_not_raised():
         assert await ing._handle_off_loop("x", dupe=False) == "error"
 
     asyncio.run(go())
+
+
+def test_live_streams_are_capped_per_address(client):  # noqa: F811
+    from app import main
+    main.ingester.closing = True  # streams end straight after the first line
+    try:
+        r = client.get("/api/live")
+        assert r.status_code == 200 and r.text.startswith("retry:")
+        assert dict(main._live_by_ip) == {}  # the slot was given back
+        main._live_by_ip["testclient"] = main.LIVE_PER_IP
+        assert client.get("/api/live").status_code == 429
+    finally:
+        main._live_by_ip.clear()
+        main.ingester.closing = False
+
+
+def test_referrer_is_sent_to_tile_servers(client):  # noqa: F811
+    # OpenStreetMap refuses tiles without a Referer.
+    assert client.get("/").headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    csp = client.get("/").headers["content-security-policy"]
+    assert "script-src 'self' https://unpkg.com" in csp and "tile.openstreetmap.org" in csp
