@@ -25,10 +25,29 @@ log = logging.getLogger("ingest")
 
 VERSION = "aprs-coverage 0.1"
 READ_TIMEOUT_S = 90  # aprsc sends a keepalive about every 20 s
+BACKOFF_MIN_S, BACKOFF_MAX_S = 5, 120
+STABLE_SESSION_S = 60  # a connection that lasted this long resets the backoff
 REJECT_KEEP = 2000
 REJECT_MAX_AGE_S = 2 * 86400  # rejected packets age out after 2 days
 FEEDS_KEY = "feeds"
 OWN_SERVER_KEY = "own_server"  # server name your aprsc gave in its login reply
+
+
+def _on_loop(loop: asyncio.AbstractEventLoop | None, fn) -> None:
+    """Run fn on the event loop that owns the feed connections. Sync FastAPI
+    endpoints run in worker threads, and asyncio streams and Events must only
+    be touched from their own loop."""
+    if loop is None or loop.is_closed():
+        fn()  # feeds not running (tests, APRS disabled): nothing to race with
+        return
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is loop:
+        fn()
+    else:
+        loop.call_soon_threadsafe(fn)
 
 
 def prune_rejects(c, now: int) -> int:
@@ -106,6 +125,7 @@ class FeedConn:
         self._writer: asyncio.StreamWriter | None = None
         self._wake = asyncio.Event()
         self._restart = False
+        self._loop: asyncio.AbstractEventLoop | None = None
         self.on_server = None  # called with the server name from the login reply
 
     def status(self) -> dict:
@@ -118,14 +138,17 @@ class FeedConn:
         aprs_log.add("tx", self.tag, text)
 
     def wake(self) -> None:
-        self._wake.set()
+        _on_loop(self._loop, self._wake.set)
 
     def restart(self) -> None:
-        """Reconnect now (settings changed), or connect if idle."""
-        self._restart = True
-        if self._writer is not None:
-            self._writer.close()
-        self._wake.set()
+        """Reconnect now (settings changed), or connect if idle. Safe to call
+        from any thread."""
+        def go():
+            self._restart = True
+            if self._writer is not None:
+                self._writer.close()
+            self._wake.set()
+        _on_loop(self._loop, go)
 
     async def idle(self, seconds: float) -> None:
         self._wake.clear()
@@ -137,7 +160,8 @@ class FeedConn:
     async def run(self, target, on_line) -> None:
         """target() returns (host, port, login line), or a string saying why
         not to connect. on_line(line) handles each packet line."""
-        backoff = 5
+        self._loop = asyncio.get_running_loop()
+        backoff = BACKOFF_MIN_S
         while True:
             t = target()
             if isinstance(t, str):
@@ -147,9 +171,9 @@ class FeedConn:
             host, port, login = t
             self.server = f"{host}:{port}"
             self._restart = False
+            started = time.monotonic()
             try:
                 await self._session(host, port, login, on_line)
-                backoff = 5
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -159,11 +183,13 @@ class FeedConn:
                     aprs_log.add("sys", self.tag, f"connection error: {self.error}; retrying in {backoff} s")
             self.connected = False
             self._writer = None
+            if time.monotonic() - started >= STABLE_SESSION_S:
+                backoff = BACKOFF_MIN_S  # it was working: retry quickly
             if self._restart:
                 aprs_log.add("sys", self.tag, "settings changed; reconnecting")
                 continue
             await self.idle(backoff)
-            backoff = min(backoff * 2, 120)
+            backoff = min(backoff * 2, BACKOFF_MAX_S)
 
     async def _session(self, host: str, port: int, login: str, on_line) -> None:
         log.info("%s: connecting to %s:%s", self.tag, host, port)
@@ -218,17 +244,22 @@ class Ingester:
 
     # ── registry and settings ────────────────────────────────────────────────
     def reload(self) -> None:
-        """Call after the station list changes. Pushes the new filter live."""
-        self.registry = load_registry()
-        new_filter = self.registry.aprs_filter()
-        if self.main._writer and self.main.connected and new_filter and new_filter != self.active_filter:
-            try:
-                self.main.write(f"#filter {new_filter}")
-                self.active_filter = new_filter
-                log.info("filter updated: %s", new_filter)
-            except Exception as e:  # reconnect loop will recover
-                log.warning("filter update failed: %s", e)
-        self.main.wake()
+        """Call after the station list changes. Pushes the new filter live.
+        Safe to call from any thread: the database read happens here, and the
+        socket write is handed to the event loop."""
+        registry = self.registry = load_registry()  # swapping the reference is atomic
+
+        def apply():
+            new_filter = registry.aprs_filter()
+            if self.main._writer and self.main.connected and new_filter and new_filter != self.active_filter:
+                try:
+                    self.main.write(f"#filter {new_filter}")
+                    self.active_filter = new_filter
+                    log.info("filter updated: %s", new_filter)
+                except Exception as e:  # reconnect loop will recover
+                    log.warning("filter update failed: %s", e)
+            self.main._wake.set()
+        _on_loop(self.main._loop, apply)
 
     def set_feeds(self, fs: FeedSettings) -> None:
         """Save new feed settings and reconnect whichever feed changed."""
