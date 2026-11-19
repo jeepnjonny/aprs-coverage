@@ -409,3 +409,5 @@ details.more p { margin: 4px 0 0; }
   .admin table.stack td.actions::before { display: none; }
   .admin table.stack .actions button { margin-left: 0; }
 }
+/* a two-click confirm, waiting for its second click (admin.js armed()) */
+.btn.armed:not(.purge) { background: var(--bad); border-color: var(--bad); color: #fff; }

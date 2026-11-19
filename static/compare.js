@@ -1,8 +1,7 @@
 /* APRS coverage: compare two mobiles or two igates/digis over time */
 (() => {
   'use strict';
-  const $ = id => document.getElementById(id);
-  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const { $, esc } = AC;
   const pct = v => v == null ? '—' : `${(v * 100).toFixed(v >= 0.995 || v < 0.1 ? 1 : 0)}%`;
   const pctRange = (lo, hi) => lo == null ? '' : `${Math.round(lo * 100)}–${Math.round(hi * 100)}%`;
   const num = n => n == null ? '—' : Number(n).toLocaleString();
@@ -14,22 +13,8 @@
   const isChange = () => $('mode').value === 'change';
   const isNode = call => STATIONS.some(s => s.kind !== 'mobile' && s.callsign === call);
 
-  // The server's error message: a string, or FastAPI's list of field errors (422).
-  const errText = (d, status) => typeof d.detail === 'string' ? d.detail
-    : Array.isArray(d.detail) ? d.detail.map(e => e.msg).join('; ') : `HTTP ${status}`;
-  async function get(url) {
-    const r = await fetch(url);
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(errText(d, r.status));
-    return d;
-  }
-  async function send(method, url, body) {
-    const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' },
-      body: body ? JSON.stringify(body) : undefined });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(errText(d, r.status));
-    return d;
-  }
+  const get = url => AC.request('GET', url);
+  const send = (method, url, body) => AC.request(method, url, body);
 
   // ── controls and URL state ─────────────────────────────────────────────────
   const CTRL = ['mode', 'a', 'b', 'range', 'bucket', 'from', 'to', 'together', 'sep', 'interval', 'match',
