@@ -421,10 +421,12 @@ def _drive(ing, call, t0, keep, lon0=-116.5, n=20, igate="KG7KMV-13", lat=43.6):
             ing.handle_line(f"{call}>APLRT1,WIDE1-1,qAR,{igate}:{_pos(lat, lon0 + i * 0.0124)}t{t0}i{i}", now=t0 + i * 60)
 
 
+# These put the change three days back (T is two days back), so the "after"
+# drives, which run to 2+ hours past day 2, are in the past at any time of day.
 def test_change_mobile_same_route(client):
     register(client)
     ing = client.ingester
-    at = T
+    at = T - 86400
     for d in range(1, 4):  # before: 3 days, every other beacon lost from i=6 on
         _drive(ing, "K7ABC-7", at - d * 86400, lambda i: i < 6 or i % 2 == 0)
     for d in range(0, 3):  # after: everything heard, plus a detour on another road
@@ -450,7 +452,7 @@ def test_change_mobile_same_route(client):
 def test_change_node(client):
     register(client)
     ing = client.ingester
-    at = T
+    at = T - 86400
     # before: KJ7NYE-10 heard a third; after its antenna change, two thirds
     for day in (-2, -1, 1, 2):  # in time order, as the ingester sees them
         tag = f"{'b' if day < 0 else 'a'}{abs(day)}"

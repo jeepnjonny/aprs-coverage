@@ -216,6 +216,18 @@ def _migrate(c: sqlite3.Connection) -> None:
     c.execute("UPDATE packets SET txid = id WHERE txid IS NULL")
 
 
+def station_pos(row) -> tuple[float | None, float | None]:
+    """A stations row's position: the one set by hand, else the one it beacons."""
+    return (row["lat"] if row["lat"] is not None else row["auto_lat"],
+            row["lon"] if row["lon"] is not None else row["auto_lon"])
+
+
+def placeholders(values) -> str:
+    """'?,?,?' for an IN (...) list. (SQLite accepts an empty list: IN () is
+    false and NOT IN () true.)"""
+    return ",".join("?" * len(values))
+
+
 def get_setting(key: str):
     with session() as c:
         row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()

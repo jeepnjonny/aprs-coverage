@@ -16,21 +16,25 @@ With a station filter, "heard" means heard by one of the selected stations, so
 the map shows what those stations alone would cover.
 """
 import bisect
-import math
 
-from . import grid
-from .compare import beacon_interval
+from . import db, grid
 from .grid import approx_km
 
 LOG_NEAR_S = 120          # a heard packet this close to a logged beacon is the log's business
 LOG_CATCHUP_S = 10        # ...once the log reaches past it (beacon sent a few seconds before it arrived)
 MAX_GAP_S = 3600          # longer silences are trips apart, not lost beacons
+INTERVAL_MAX_GAP_S = 900  # gaps used to estimate a beacon interval: longer is parked or off
 MIN_MOVE_KM = 0.1         # ends of a gap closer than this: parked, nothing to estimate
 MIN_SPEED_KMH = 3.0       # ...or moving slower than this on average (stopped part of the way)
 
 
-def _cell(lat, lon, dlat, dlon):
-    return math.floor(lon / dlon), math.floor(lat / dlat)
+def beacon_interval(heard: list[dict]) -> int | None:
+    """Estimate the beacon interval from gaps between heard packets. Losses
+    make some gaps 2x, 3x the interval, so take the lower quartile."""
+    gaps = sorted(b["ts"] - a["ts"] for a, b in zip(heard, heard[1:]) if 5 <= b["ts"] - a["ts"] <= INTERVAL_MAX_GAP_S)
+    if len(gaps) < 5:
+        return None
+    return gaps[len(gaps) // 4]
 
 
 def reliability(c, start: int, end: int, cell_m: int, mobiles: list[str] | None,
@@ -44,7 +48,7 @@ def reliability(c, start: int, end: int, cell_m: int, mobiles: list[str] | None,
     if mobiles is not None:
         if not mobiles:
             return {"cells": [], "sent": 0, "heard": 0, "exact": 0, "mobiles": {}}
-        q += f" AND mobile IN ({','.join('?' * len(mobiles))})"
+        q += f" AND mobile IN ({db.placeholders(mobiles)})"
         args += mobiles
 
     heard: dict[str, list[dict]] = {}
@@ -62,7 +66,7 @@ def reliability(c, start: int, end: int, cell_m: int, mobiles: list[str] | None,
     by_day: dict[tuple[int, int], dict[int, list[int]]] = {}  # only with day_of: per square, per day [heard, sent]
 
     def add(lat, lon, ts, got, exact):
-        k = _cell(lat, lon, dlat, dlon)
+        k = grid.cell_at(lat, lon, dlat, dlon)
         if day_of:
             d = by_day.setdefault(k, {}).setdefault(day_of(ts), [0, 0])
             d[0] += got

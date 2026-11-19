@@ -11,9 +11,12 @@ records every station that heard a packet, not just the first.
 """
 import bisect
 import math
+import time
 from datetime import datetime, timezone
 
+from . import db, grid
 from .grid import approx_km
+from .reliability import beacon_interval, reliability
 
 BUCKETS = ("day", "week", "month")
 MAX_GAP_S = 900          # a longer silence is parked or switched off, not lost packets
@@ -80,7 +83,7 @@ def _ratio(k, n):
 def events(c, devices: list[str], start: int, end: int) -> list[dict]:
     if not devices:
         return []
-    q = ",".join("?" * len(devices))
+    q = db.placeholders(devices)
     return [dict(r) for r in c.execute(
         f"SELECT id, device, ts, text, source, user_id FROM device_events WHERE device IN ({q}) "
         f"AND ts BETWEEN ? AND ? ORDER BY ts", (*devices, start, end))]
@@ -120,15 +123,6 @@ def _txlog(c, mobile, start, end) -> list[dict]:
     return [dict(r) for r in c.execute(
         "SELECT id, ts, txid, lat, lon, info FROM device_log WHERE device=? AND kind='tx' AND is_pos=1 "
         "AND repeat_of IS NULL AND ts BETWEEN ? AND ? ORDER BY ts", (mobile, start, end))]
-
-
-def beacon_interval(heard: list[dict]) -> int | None:
-    """Estimate the beacon interval from gaps between heard packets. Losses
-    make some gaps 2x, 3x the interval, so take the lower quartile."""
-    gaps = sorted(b["ts"] - a["ts"] for a, b in zip(heard, heard[1:]) if 5 <= b["ts"] - a["ts"] <= MAX_GAP_S)
-    if len(gaps) < 5:
-        return None
-    return gaps[len(gaps) // 4]
 
 
 def _rx_summary(c, mobile, start, end, log: list[dict]) -> dict:
@@ -273,7 +267,7 @@ def compare_nodes(c, a: str, b: str, start: int, end: int, bucket: str = "week",
         expr, pa, pb = "chain LIKE ?", f"% {a} %", f"% {b} %"
     where, args = "ts BETWEEN ? AND ?", [start, end]
     if mobiles:
-        where += f" AND mobile IN ({','.join('?' * len(mobiles))})"
+        where += f" AND mobile IN ({db.placeholders(mobiles)})"
         args += mobiles
     rows = c.execute(
         f"SELECT txid, MIN(ts) AS ts, MAX(lat) AS lat, MAX(lon) AS lon, "
@@ -285,8 +279,7 @@ def compare_nodes(c, a: str, b: str, start: int, end: int, bucket: str = "week",
     for call in (a, b):
         s = c.execute("SELECT lat, lon, auto_lat, auto_lon FROM stations WHERE callsign=?", (call,)).fetchone()
         if s is not None:
-            lat = s["lat"] if s["lat"] is not None else s["auto_lat"]
-            lon = s["lon"] if s["lon"] is not None else s["auto_lon"]
+            lat, lon = db.station_pos(s)
             if lat is not None and lon is not None:
                 pos[call] = (lat, lon)
 
@@ -343,15 +336,13 @@ def _side(heard: int, sent: int, start: int, end: int) -> dict:
 def _node_cells(c, station, start, end, cell_m, match, day_of):
     """Per square (of where each transmission was sent from): of the
     transmissions anyone heard, how many this station heard, also per day."""
-    from . import grid
-    from .reliability import _cell
     dlat, dlon = grid.cell_deg(cell_m)
     expr, arg = ("heard_by = ?", station) if match == "first" else ("chain LIKE ?", f"% {station} %")
     cells: dict = {}
     days: dict = {}
     for r in c.execute(f"SELECT MIN(ts) AS ts, MAX(lat) AS lat, MAX(lon) AS lon, MAX({expr}) AS h FROM packets "
                        f"WHERE ts BETWEEN ? AND ? GROUP BY txid", (arg, start, end)):
-        k = _cell(r["lat"], r["lon"], dlat, dlon)
+        k = grid.cell_at(r["lat"], r["lon"], dlat, dlon)
         e = cells.setdefault(k, [0, 0])
         e[0] += bool(r["h"])
         e[1] += 1
@@ -367,10 +358,7 @@ def compare_change(c, station: str, at: int, days: int | None, cell_m: int = 500
     new firmware). days: length of each period; None = from the change until
     now, with a before period just as long. same_route: only squares the
     station was in during both periods, so a detour doesn't count as a change."""
-    import time
 
-    from . import grid
-    from .reliability import reliability
     now = now or int(time.time())
     span = days * 86400 if days else max(86400, now - at)
     b0, b1, a0, a1 = at - span, at - 1, at, min(at + span, now)

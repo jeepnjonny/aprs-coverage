@@ -11,7 +11,9 @@ from pydantic import BaseModel
 
 from .. import auth, config, db, devicelog, logbuf
 from ..ingest import ingester
-from .shared import StationIn, _clean_profile, _insert_station, _station_rows, _user
+from .shared import (
+    callsign_unique, DETAIL_FIELDS, STATION_FIELDS, station_values, StationIn, _clean_profile, _insert_station, _station_rows, _user,
+)
 
 router = APIRouter()
 
@@ -303,17 +305,13 @@ def edit_device(sid: int, body: StationIn, user: dict = Depends(auth.require_use
             if (body.callsign, body.kind) != (st["callsign"], st["kind"]):
                 raise HTTPException(422, "The callsign and type can't change after approval. "
                                          "Add a new device instead, then delete this one.")
-            c.execute("UPDATE stations SET label=?,notes=?,color=?,hardware=?,lat=?,lon=?,active=? WHERE id=?",
-                      (body.label, body.notes, body.color, body.hardware, body.lat, body.lon, int(body.active), sid))
+            sets = ",".join(f"{f}=?" for f in DETAIL_FIELDS)
+            c.execute(f"UPDATE stations SET {sets} WHERE id=?", (*station_values(body, DETAIL_FIELDS), sid))
         else:
-            try:
-                c.execute(
-                    "UPDATE stations SET callsign=?,kind=?,label=?,notes=?,color=?,hardware=?,lat=?,lon=?,active=?,"
-                    "status='pending',review_note='' WHERE id=?",
-                    (body.callsign, body.kind, body.label, body.notes, body.color, body.hardware, body.lat, body.lon,
-                     int(body.active), sid))
-            except sqlite3.IntegrityError:
-                raise HTTPException(409, f"{body.callsign} is already registered")
+            sets = ",".join(f"{f}=?" for f in STATION_FIELDS)
+            with callsign_unique(body.callsign):
+                c.execute(f"UPDATE stations SET {sets},status='pending',review_note='' WHERE id=?",
+                          (*station_values(body), sid))
     if approved:
         ingester.reload()
     return {"ok": True}

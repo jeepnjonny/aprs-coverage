@@ -13,6 +13,7 @@ from collections import defaultdict
 
 import aprslib
 
+from . import db
 from .packets import POSITION_FORMATS, is_alias, mobile_matches, object_key
 
 KEY_PREFIX = "acv_"
@@ -20,6 +21,7 @@ MAX_KEYS = 5                      # per user
 MAX_ENTRIES = 1000                # per upload
 MAX_AGE_S = 400 * 86400           # oldest entry accepted
 MAX_FUTURE_S = 300                # clock slack for entries "from the future"
+MAX_NOTE_LEN = 300                # characters in a dated note (from the app or the web)
 # A logged transmission matches a stored packet with the same information field
 # received this many seconds before/after it (phone and server clocks, digi and
 # igate delays).
@@ -179,7 +181,7 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
             continue
         ts = int(ts)
         if t == "event":
-            text = str(e.get("text") or "").strip()[:300]
+            text = str(e.get("text") or "").strip()[:MAX_NOTE_LEN]
             if not text:
                 err(i, "event needs text")
                 continue
@@ -233,7 +235,7 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
     # so far (more can match later, once their packets arrive).
     res["tx"] = len(tx_ids)
     res["heard"] = sum(c.execute(f"SELECT COUNT(*) FROM device_log WHERE txid IS NOT NULL AND id IN "
-                                 f"({','.join('?' * len(chunk))})", chunk).fetchone()[0]
+                                 f"({db.placeholders(chunk)})", chunk).fetchone()[0]
                        for chunk in (tx_ids[i:i + 500] for i in range(0, len(tx_ids), 500)))
     res["errors"] = res["errors"][:20]
     return res

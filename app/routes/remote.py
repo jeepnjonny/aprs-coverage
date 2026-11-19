@@ -74,7 +74,7 @@ def remote_overview(login: str | None = None, user: dict = Depends(auth.require_
         if admin:
             logs = c.execute("SELECT * FROM node_config_log ORDER BY id DESC LIMIT ?", (LOG_ROWS,)).fetchall()
         elif calls:
-            logs = c.execute(f"SELECT * FROM node_config_log WHERE callsign IN ({','.join('?' * len(calls))}) "
+            logs = c.execute(f"SELECT * FROM node_config_log WHERE callsign IN ({db.placeholders(calls)}) "
                              "ORDER BY id DESC LIMIT ?", (*calls, LOG_ROWS)).fetchall()
         else:
             logs = []

@@ -3,6 +3,7 @@ import colorsys
 import re
 import sqlite3
 import time
+from contextlib import contextmanager
 
 from fastapi import HTTPException
 from pydantic import BaseModel, field_validator
@@ -32,7 +33,7 @@ def _where(c, start, end, mobiles, heard_by, match):
         if not mobiles:
             clauses.append("0")
         else:
-            clauses.append(f"mobile IN ({','.join('?' * len(mobiles))})")
+            clauses.append(f"mobile IN ({db.placeholders(mobiles)})")
             args += mobiles
     if heard_by is not None:
         ors = []
@@ -42,14 +43,14 @@ def _where(c, start, end, mobiles, heard_by, match):
                 ors += ["chain LIKE ?"] * len(calls)
                 args += [f"% {h} %" for h in calls]
             else:
-                ors.append(f"heard_by IN ({','.join('?' * len(calls))})")
+                ors.append(f"heard_by IN ({db.placeholders(calls)})")
                 args += calls
         if UNTRACED in heard_by:
             ors.append("heard_by IS NULL")
         if OTHER in heard_by:
             infra = _infra_calls(c)
             if infra:
-                ors.append(f"(heard_by IS NOT NULL AND heard_by NOT IN ({','.join('?' * len(infra))}))")
+                ors.append(f"(heard_by IS NOT NULL AND heard_by NOT IN ({db.placeholders(infra)}))")
                 args += infra
             else:
                 ors.append("heard_by IS NOT NULL")
@@ -180,18 +181,31 @@ class AdminStationIn(StationIn):
     owner_id: int | None = None  # only changed when the request includes it
 
 
-def _insert_station(c, body: StationIn, *, owner_id: int | None, status: str) -> int:
+# The station columns a form sets, in order (owner and status are separate).
+STATION_FIELDS = ("callsign", "kind", "label", "notes", "color", "hardware", "lat", "lon", "active")
+DETAIL_FIELDS = STATION_FIELDS[2:]  # what can still change once a device is approved
+
+
+def station_values(body: StationIn, fields=STATION_FIELDS) -> list:
+    return [int(body.active) if f == "active" else getattr(body, f) for f in fields]
+
+
+@contextmanager
+def callsign_unique(callsign: str):
+    """Turns the UNIQUE(callsign) error of an insert or update into a 409."""
     try:
-        cur = c.execute(
-            "INSERT INTO stations(callsign,kind,label,notes,color,hardware,lat,lon,active,owner_id,status) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (body.callsign, body.kind, body.label, body.notes, body.color, body.hardware, body.lat, body.lon,
-             int(body.active), owner_id, status),
-        )
+        yield
     except sqlite3.IntegrityError as e:
         if "UNIQUE" in str(e):
-            raise HTTPException(409, f"{body.callsign} is already registered")
+            raise HTTPException(409, f"{callsign} is already registered") from None
         raise
+
+
+def _insert_station(c, body: StationIn, *, owner_id: int | None, status: str) -> int:
+    cols = (*STATION_FIELDS, "owner_id", "status")
+    with callsign_unique(body.callsign):
+        cur = c.execute(f"INSERT INTO stations({','.join(cols)}) VALUES({db.placeholders(cols)})",
+                        (*station_values(body), owner_id, status))
     return cur.lastrowid
 
 

@@ -39,8 +39,7 @@ def api_stations():
     out = []
     for r in rows:
         call = r["callsign"]
-        lat = r["lat"] if r["lat"] is not None else r["auto_lat"]
-        lon = r["lon"] if r["lon"] is not None else r["auto_lon"]
+        lat, lon = db.station_pos(r)
         if r["kind"] == "mobile":
             last = max((t for m, t in mob.items() if _matches(m, call)), default=None)
         else:
@@ -154,7 +153,7 @@ def api_failures(
     clauses, args = ["kind='tx'", "is_pos=1", "repeat_of IS NULL", "ts >= ?", "ts <= ?"], [start, end]
     mob = _csv(mobiles)
     if mob is not None:
-        clauses.append(f"device IN ({','.join('?' * len(mob))})" if mob else "0")
+        clauses.append(f"device IN ({db.placeholders(mob)})" if mob else "0")
         args += mob
     where = " AND ".join(clauses)
     with db.session() as c:
@@ -199,8 +198,7 @@ def api_stats(
         infra_rows = []
         for s in infra:
             call = s["callsign"]
-            lat = s["lat"] if s["lat"] is not None else s["auto_lat"]
-            lon = s["lon"] if s["lon"] is not None else s["auto_lon"]
+            lat, lon = db.station_pos(s)
             max_km = max_at = None
             if lat is not None and lon is not None and call in direct:
                 kx = grid.M_PER_DEG_LON_EQ / 1000 * math.cos(math.radians(lat))
@@ -377,8 +375,8 @@ def add_event(body: EventIn, user: dict = Depends(auth.require_active)):
     """A dated note on one of your devices (antenna swap, moved, new
     firmware), shown on comparisons that include it."""
     device, text = body.device.strip().upper(), body.text.strip()
-    if not text or len(text) > 300:
-        raise HTTPException(422, "Note: 1 to 300 characters")
+    if not text or len(text) > devicelog.MAX_NOTE_LEN:
+        raise HTTPException(422, f"Note: 1 to {devicelog.MAX_NOTE_LEN} characters")
     with db.session() as c:
         try:
             devicelog._device_kind(c, user, device)

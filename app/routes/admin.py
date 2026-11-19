@@ -1,7 +1,6 @@
 """Admin API: stations, users, feed status and settings, logs."""
 import logging
 import re
-import sqlite3
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -10,7 +9,9 @@ from pydantic import BaseModel, field_validator
 from .. import auth, config, db, devicelog, ingest, logbuf
 from ..ingest import ingester
 from ..packets import mobile_matches
-from .shared import AdminStationIn, _check_owner, _clean_profile, _insert_station, _station_rows, _user
+from .shared import (
+    AdminStationIn, callsign_unique, STATION_FIELDS, station_values, _check_owner, _clean_profile, _insert_station, _station_rows, _user,
+)
 
 router = APIRouter()
 
@@ -34,18 +35,16 @@ def admin_create_station(body: AdminStationIn):
 @router.put("/api/admin/stations/{sid}", dependencies=[Depends(auth.require_admin)])
 def admin_update_station(sid: int, body: AdminStationIn):
     body.check()
-    sets = "callsign=?,kind=?,label=?,notes=?,color=?,hardware=?,lat=?,lon=?,active=?"
-    args = [body.callsign, body.kind, body.label, body.notes, body.color, body.hardware,
-            body.lat, body.lon, int(body.active)]
+    fields = list(STATION_FIELDS)
+    args = station_values(body)
     with db.session() as c:
         if "owner_id" in body.model_fields_set:
             _check_owner(c, body.owner_id)
-            sets += ",owner_id=?"
+            fields.append("owner_id")
             args.append(body.owner_id)
-        try:
+        sets = ",".join(f"{f}=?" for f in fields)
+        with callsign_unique(body.callsign):
             cur = c.execute(f"UPDATE stations SET {sets} WHERE id=?", (*args, sid))
-        except sqlite3.IntegrityError:
-            raise HTTPException(409, f"{body.callsign} is already registered")
         if cur.rowcount == 0:
             raise HTTPException(404, "No such station")
     ingester.reload()
@@ -63,14 +62,7 @@ def admin_delete_station(sid: int):
 
 @router.post("/api/admin/stations/{sid}/approve")
 def admin_approve_station(sid: int, admin: dict = Depends(auth.require_admin)):
-    with db.session() as c:
-        st = c.execute("SELECT callsign FROM stations WHERE id=?", (sid,)).fetchone()
-        if st is None:
-            raise HTTPException(404, "No such station")
-        c.execute("UPDATE stations SET status='approved', review_note='' WHERE id=?", (sid,))
-    ingester.reload()
-    logging.getLogger("admin").info("%s approved %s", admin["username"], st["callsign"])
-    return {"ok": True}
+    return _set_station_status(sid, "approved", "", admin)
 
 
 class RejectIn(BaseModel):
@@ -81,13 +73,17 @@ class RejectIn(BaseModel):
 def admin_reject_station(sid: int, body: RejectIn, admin: dict = Depends(auth.require_admin)):
     """The device stays, marked rejected with the reason, so its owner sees why
     and can fix and resubmit it, or delete it."""
+    return _set_station_status(sid, "rejected", body.note.strip()[:devicelog.MAX_NOTE_LEN], admin)
+
+
+def _set_station_status(sid: int, status: str, note: str, admin: dict) -> dict:
     with db.session() as c:
         st = c.execute("SELECT callsign FROM stations WHERE id=?", (sid,)).fetchone()
         if st is None:
             raise HTTPException(404, "No such station")
-        c.execute("UPDATE stations SET status='rejected', review_note=? WHERE id=?", (body.note.strip()[:300], sid))
+        c.execute("UPDATE stations SET status=?, review_note=? WHERE id=?", (status, note, sid))
     ingester.reload()
-    logging.getLogger("admin").info("%s rejected %s", admin["username"], st["callsign"])
+    logging.getLogger("admin").info("%s %s %s", admin["username"], status, st["callsign"])
     return {"ok": True}
 
 
