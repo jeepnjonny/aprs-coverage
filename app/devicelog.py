@@ -13,17 +13,20 @@ from collections import defaultdict
 
 import aprslib
 
-from .packets import POSITION_FORMATS, is_alias, mobile_matches, object_key
+from . import db
+from .packets import POSITION_FORMATS, is_alias, mobile_matches, object_key, used_hops
 
 KEY_PREFIX = "acv_"
 MAX_KEYS = 5                      # per user
 MAX_ENTRIES = 1000                # per upload
 MAX_AGE_S = 400 * 86400           # oldest entry accepted
 MAX_FUTURE_S = 300                # clock slack for entries "from the future"
+MAX_NOTE_LEN = 300                # characters in a dated note (from the app or the web)
 # A logged transmission matches a stored packet with the same information field
 # received this many seconds before/after it (phone and server clocks, digi and
 # igate delays).
 MATCH_BEFORE_S, MATCH_AFTER_S = 30, 90
+SETTLE_S = MATCH_AFTER_S + 30  # a transmission this old has had its chance to be heard
 # APRS-IS servers drop a packet identical (same source and information field)
 # to one they passed within this many seconds. A tracker beaconing faster than
 # that from the same spot repeats itself, and those repeats never reach APRS-IS
@@ -110,16 +113,15 @@ def last_digi(path: list[str]) -> tuple[bool, str | None]:
     """(was digipeated, callsign of the digi that last sent it). The '*' marks
     the last used hop; the sender is the last traced callsign among used hops,
     None if only aliases were used (an untraced digi)."""
-    used_to = max((i for i, h in enumerate(path) if h.endswith("*")), default=-1)
-    if used_to < 0:
+    used = used_hops(path)
+    if not used:
         return False, None
-    used = [h.rstrip("*").upper() for h in path[: used_to + 1]]
     calls = [h for h in used if not is_alias(h)]
     return True, (calls[-1] if calls else None)
 
 
 # ── upload ───────────────────────────────────────────────────────────────────
-def _device_kind(c, user: dict, device: str) -> str:
+def device_kind(c, user: dict, device: str) -> str:
     """'mobile' or 'node' for an approved device of this user's (any for an
     admin). A mobile registered as a pattern (K7ABC-*) uploads per SSID."""
     admin = user["role"] == "admin"
@@ -157,10 +159,9 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
         raise UploadError(422, "device is required")
     if len(entries) > MAX_ENTRIES:
         raise UploadError(413, f"At most {MAX_ENTRIES} entries per upload")
-    kind = _device_kind(c, user, device)
+    kind = device_kind(c, user, device)
     sender = device.split(":", 1)[0]
-    nodes = {r[0].upper() for r in c.execute(
-        "SELECT callsign FROM stations WHERE kind != 'mobile' AND status='approved'")}
+    nodes = {call.upper() for call in db.infra_calls(c)}
     res = {"accepted": 0, "duplicates": 0, "ignored": 0, "errors": []}
     tx_span = [None, None]
     tx_ids: list[int] = []
@@ -175,11 +176,11 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
         t = e.get("type")
         ts = _number(e.get("ts"), now - MAX_AGE_S, now + MAX_FUTURE_S)
         if ts is None:
-            err(i, "ts must be unix seconds within the last 400 days")
+            err(i, f"ts must be unix seconds within the last {MAX_AGE_S // 86400} days")
             continue
         ts = int(ts)
         if t == "event":
-            text = str(e.get("text") or "").strip()[:300]
+            text = str(e.get("text") or "").strip()[:MAX_NOTE_LEN]
             if not text:
                 err(i, "event needs text")
                 continue
@@ -233,7 +234,7 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
     # so far (more can match later, once their packets arrive).
     res["tx"] = len(tx_ids)
     res["heard"] = sum(c.execute(f"SELECT COUNT(*) FROM device_log WHERE txid IS NOT NULL AND id IN "
-                                 f"({','.join('?' * len(chunk))})", chunk).fetchone()[0]
+                                 f"({db.placeholders(chunk)})", chunk).fetchone()[0]
                        for chunk in (tx_ids[i:i + 500] for i in range(0, len(tx_ids), 500)))
     res["errors"] = res["errors"][:20]
     return res
@@ -291,7 +292,13 @@ def match(c, device: str, start: int, end: int) -> int:
 
 def _ago(s: int) -> str:
     s = abs(s)
-    return f"{s} s" if s < 120 else f"{s // 60} min" if s < 7200 else f"{s // 3600} h" if s < 172800 else f"{s // 86400} days"
+    if s < 120:
+        return f"{s} s"
+    if s < 7200:
+        return f"{s // 60} min"
+    if s < 172800:
+        return f"{s // 3600} h"
+    return f"{s // 86400} days"
 
 
 def explain_unheard(c, device: str, ts: int, info: str, now: int | None = None) -> str:
@@ -299,7 +306,7 @@ def explain_unheard(c, device: str, ts: int, info: str, now: int | None = None) 
     rejected by a quality check, stored with different text (an app decoding
     problem), the station isn't set up to be collected, or nothing arrived."""
     now = now or int(time.time())
-    if ts > now - MATCH_AFTER_S - 30:
+    if ts > now - SETTLE_S:
         return "not heard yet (its packet may still be on the way)"
     rej = c.execute("SELECT ts, reason FROM rejects WHERE source=? AND ts BETWEEN ? AND ? ORDER BY ABS(ts-?) LIMIT 1",
                     (device, ts - MATCH_BEFORE_S, ts + MATCH_AFTER_S, ts)).fetchone()

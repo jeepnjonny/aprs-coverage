@@ -44,6 +44,13 @@ def is_alias(hop: str) -> bool:
     return len(base) <= 2 and base.isalpha()
 
 
+def used_hops(hops: list[str]) -> list[str]:
+    """The hops a packet actually went through: the '*' marks the last used
+    one, so every hop up to and including it. Upper case, without the '*'."""
+    last_used = max((i for i, h in enumerate(hops) if h.endswith("*")), default=-1)
+    return [h.rstrip("*").upper() for h in hops[: last_used + 1]]
+
+
 @dataclass
 class Route:
     qconstruct: str
@@ -67,8 +74,7 @@ def route_from_path(path: list[str]) -> Route | None:
     hops = path[:qi]
     igate = path[qi + 1].upper()
 
-    last_used = max((i for i, h in enumerate(hops) if h.endswith("*")), default=-1)
-    used = [h.rstrip("*").upper() for h in hops[: last_used + 1]]
+    used = used_hops(hops)
     digis = [h for h in used if not is_alias(h)]
 
     if not used:

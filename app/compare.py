@@ -11,9 +11,12 @@ records every station that heard a packet, not just the first.
 """
 import bisect
 import math
+import time
 from datetime import datetime, timezone
 
+from . import db, grid
 from .grid import approx_km
+from .reliability import beacon_interval, reliability
 
 BUCKETS = ("day", "week", "month")
 MAX_GAP_S = 900          # a longer silence is parked or switched off, not lost packets
@@ -73,6 +76,12 @@ def bucket_start(ts: int, bucket: str, tz_s: int = 0) -> int:
     return b - tz_s
 
 
+def share(k: int, n: int) -> dict:
+    """k of n as {pct, lo, hi}: the share and its 95% interval (None if n=0)."""
+    lo, hi = wilson(k, n) or (None, None)
+    return {"pct": _ratio(k, n), "lo": lo, "hi": hi}
+
+
 def _ratio(k, n):
     return k / n if n else None
 
@@ -80,7 +89,7 @@ def _ratio(k, n):
 def events(c, devices: list[str], start: int, end: int) -> list[dict]:
     if not devices:
         return []
-    q = ",".join("?" * len(devices))
+    q = db.placeholders(devices)
     return [dict(r) for r in c.execute(
         f"SELECT id, device, ts, text, source, user_id FROM device_events WHERE device IN ({q}) "
         f"AND ts BETWEEN ? AND ? ORDER BY ts", (*devices, start, end))]
@@ -120,15 +129,6 @@ def _txlog(c, mobile, start, end) -> list[dict]:
     return [dict(r) for r in c.execute(
         "SELECT id, ts, txid, lat, lon, info FROM device_log WHERE device=? AND kind='tx' AND is_pos=1 "
         "AND repeat_of IS NULL AND ts BETWEEN ? AND ? ORDER BY ts", (mobile, start, end))]
-
-
-def beacon_interval(heard: list[dict]) -> int | None:
-    """Estimate the beacon interval from gaps between heard packets. Losses
-    make some gaps 2x, 3x the interval, so take the lower quartile."""
-    gaps = sorted(b["ts"] - a["ts"] for a, b in zip(heard, heard[1:]) if 5 <= b["ts"] - a["ts"] <= MAX_GAP_S)
-    if len(gaps) < 5:
-        return None
-    return gaps[len(gaps) // 4]
 
 
 def _rx_summary(c, mobile, start, end, log: list[dict]) -> dict:
@@ -209,23 +209,20 @@ def mobile_series(c, mobile: str, start: int, end: int, bucket: str, tz_s: int,
     for x in sorted(b.values(), key=lambda r: r["t"]):
         if x["method"] is None:
             x["sent"] = x["heard"] = 0
-        ci = wilson(x["heard"], x["sent"])
         rows.append({
             "t": x["t"], "method": x["method"], "sent": x["sent"], "heard": x["heard"],
-            "pct": _ratio(x["heard"], x["sent"]), "lo": ci[0] if ci else None, "hi": ci[1] if ci else None,
+            **share(x["heard"], x["sent"]),
             "packets": x["packets"], "direct_pct": _ratio(x["direct"], x["packets"]),
             "stations": round(x["stations"] / x["packets"], 2) if x["packets"] else None,
         })
     sent = sum(r["sent"] for r in rows)
     got = sum(r["heard"] for r in rows)
     methods = {r["method"] for r in rows if r["method"]}
-    ci = wilson(got, sent)
     pk = sum(r["packets"] for r in rows)
     return {
         "mobile": mobile, "buckets": rows, "interval_s": est_interval, "interval_given": bool(interval),
         "total": {
-            "sent": sent, "heard": got, "pct": _ratio(got, sent), "lo": ci[0] if ci else None,
-            "hi": ci[1] if ci else None, "packets": pk,
+            "sent": sent, "heard": got, **share(got, sent), "packets": pk,
             "method": "mixed" if len(methods) > 1 else (methods.pop() if methods else None),
             "direct_pct": _ratio(sum(x["direct"] for x in b.values()), pk),
             "stations": round(sum(x["stations"] for x in b.values()) / pk, 2) if pk else None,
@@ -267,13 +264,11 @@ def compare_nodes(c, a: str, b: str, start: int, end: int, bucket: str = "week",
                   match: str = "first", mobiles: list[str] | None = None) -> dict:
     """Of the transmissions anyone heard, which each station heard.
     match 'first': heard the mobile directly; 'any': anywhere in the path."""
-    if match == "first":
-        expr, pa, pb = "heard_by = ?", a, b
-    else:
-        expr, pa, pb = "chain LIKE ?", f"% {a} %", f"% {b} %"
+    expr, pa = db.heard_expr(a, match)
+    _, pb = db.heard_expr(b, match)
     where, args = "ts BETWEEN ? AND ?", [start, end]
     if mobiles:
-        where += f" AND mobile IN ({','.join('?' * len(mobiles))})"
+        where += f" AND mobile IN ({db.placeholders(mobiles)})"
         args += mobiles
     rows = c.execute(
         f"SELECT txid, MIN(ts) AS ts, MAX(lat) AS lat, MAX(lon) AS lon, "
@@ -285,8 +280,7 @@ def compare_nodes(c, a: str, b: str, start: int, end: int, bucket: str = "week",
     for call in (a, b):
         s = c.execute("SELECT lat, lon, auto_lat, auto_lon FROM stations WHERE callsign=?", (call,)).fetchone()
         if s is not None:
-            lat = s["lat"] if s["lat"] is not None else s["auto_lat"]
-            lon = s["lon"] if s["lon"] is not None else s["auto_lon"]
+            lat, lon = db.station_pos(s)
             if lat is not None and lon is not None:
                 pos[call] = (lat, lon)
 
@@ -310,15 +304,12 @@ def compare_nodes(c, a: str, b: str, start: int, end: int, bucket: str = "week",
     for x in sorted(bk.values(), key=lambda r: r["t"]):
         n = x["total"]
         ka, kb = x["both"] + x["a_only"], x["both"] + x["b_only"]
-        ca, cb = wilson(ka, n), wilson(kb, n)
-        out.append({**x, "a_pct": _ratio(ka, n), "b_pct": _ratio(kb, n),
-                    "a_lo": ca and ca[0], "a_hi": ca and ca[1], "b_lo": cb and cb[0], "b_hi": cb and cb[1]})
+        sa, sb = share(ka, n), share(kb, n)
+        out.append({**x, **{f"a_{k}": v for k, v in sa.items()}, **{f"b_{k}": v for k, v in sb.items()}})
     tot = {k: sum(x[k] for x in out) for k in ("total", "both", "a_only", "b_only", "neither")}
     for call, side in ((a, "a"), (b, "b")):
         k = tot["both"] + tot[f"{side}_only"]
-        ci = wilson(k, tot["total"])
-        tot[f"{side}_pct"] = _ratio(k, tot["total"])
-        tot[f"{side}_lo"], tot[f"{side}_hi"] = (ci or (None, None))
+        tot.update({f"{side}_{key}": v for key, v in share(k, tot["total"]).items()})
     for lst in bands.values():
         for band in lst:
             band["pct"] = _ratio(band["heard"], band["n"])
@@ -335,23 +326,19 @@ CHANGE_MIN_BEACONS = 3   # a square needs this many beacons on both sides to lis
 
 
 def _side(heard: int, sent: int, start: int, end: int) -> dict:
-    ci = wilson(heard, sent)
-    return {"start": start, "end": end, "heard": heard, "sent": sent, "pct": _ratio(heard, sent),
-            "lo": ci[0] if ci else None, "hi": ci[1] if ci else None}
+    return {"start": start, "end": end, "heard": heard, "sent": sent, **share(heard, sent)}
 
 
 def _node_cells(c, station, start, end, cell_m, match, day_of):
     """Per square (of where each transmission was sent from): of the
     transmissions anyone heard, how many this station heard, also per day."""
-    from .reliability import _cell
-    from . import grid
     dlat, dlon = grid.cell_deg(cell_m)
-    expr, arg = ("heard_by = ?", station) if match == "first" else ("chain LIKE ?", f"% {station} %")
+    expr, arg = db.heard_expr(station, match)
     cells: dict = {}
     days: dict = {}
     for r in c.execute(f"SELECT MIN(ts) AS ts, MAX(lat) AS lat, MAX(lon) AS lon, MAX({expr}) AS h FROM packets "
                        f"WHERE ts BETWEEN ? AND ? GROUP BY txid", (arg, start, end)):
-        k = _cell(r["lat"], r["lon"], dlat, dlon)
+        k = grid.cell_at(r["lat"], r["lon"], dlat, dlon)
         e = cells.setdefault(k, [0, 0])
         e[0] += bool(r["h"])
         e[1] += 1
@@ -367,9 +354,7 @@ def compare_change(c, station: str, at: int, days: int | None, cell_m: int = 500
     new firmware). days: length of each period; None = from the change until
     now, with a before period just as long. same_route: only squares the
     station was in during both periods, so a detour doesn't count as a change."""
-    import time
-    from . import grid
-    from .reliability import reliability
+
     now = now or int(time.time())
     span = days * 86400 if days else max(86400, now - at)
     b0, b1, a0, a1 = at - span, at - 1, at, min(at + span, now)
@@ -404,9 +389,7 @@ def compare_change(c, station: str, at: int, days: int | None, cell_m: int = 500
         rows = []
         for d in sorted(out):
             h, n = out[d]
-            ci = wilson(h, n)
-            rows.append({"t": d, "side": side, "heard": h, "sent": n, "pct": _ratio(h, n),
-                         "lo": ci[0] if ci else None, "hi": ci[1] if ci else None})
+            rows.append({"t": d, "side": side, "heard": h, "sent": n, **share(h, n)})
         return rows
 
     hb, nb = total(cb, route_b)

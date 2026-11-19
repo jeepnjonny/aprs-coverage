@@ -1,8 +1,7 @@
 /* APRS coverage: admin page */
 (() => {
   'use strict';
-  const $ = id => document.getElementById(id);
-  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const { $, esc } = AC;
   const fmt = ts => ts ? new Date(ts * 1000).toLocaleString() : '—';
   const KIND = { mobile: 'Mobile', igate: 'Igate', digi: 'Digi', digi_igate: 'Digi + igate' };
   // Hardware choices come from the server (api/config); keys are what gets stored.
@@ -16,19 +15,14 @@
     sel.value = cur;
   }
 
+  // Like AC.request, but a 401 (session ended) shows the login form.
   async function api(method, url, body) {
-    const r = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    const data = await r.json().catch(() => ({}));
-    if (r.status === 401 && !/api\/(login|signup)$/.test(url)) { showLoggedOut(); throw new Error('Login required'); }
-    if (!r.ok) {
-      const d = data.detail;
-      throw new Error(typeof d === 'string' ? d : Array.isArray(d) ? d.map(x => x.msg.replace(/^Value error, /, '')).join('; ') : `HTTP ${r.status}`);
+    try {
+      return await AC.request(method, url, body);
+    } catch (e) {
+      if (e.status === 401 && !/api\/(login|signup)$/.test(url)) { showLoggedOut(); throw new Error('Login required'); }
+      throw e;
     }
-    return data;
   }
 
   // Shows a message in a status span; success messages fade after a few seconds.
@@ -41,12 +35,15 @@
 
   // Two-click confirm (instead of window.confirm): the first click arms the
   // button for 4 s and returns false; a second click within that returns true.
+  // While armed the button has the "armed" class (a louder style) and says
+  // what the second click will do.
   function armed(btn, confirmText = 'Confirm') {
     if (btn.dataset.armed === '1') return true;
     const orig = btn.textContent;
     btn.dataset.armed = '1';
     btn.textContent = confirmText;
-    setTimeout(() => { btn.dataset.armed = ''; btn.textContent = orig; }, 4000);
+    btn.classList.add('armed');
+    setTimeout(() => { btn.dataset.armed = ''; btn.textContent = orig; btn.classList.remove('armed'); }, 4000);
     return false;
   }
 
@@ -229,7 +226,6 @@
 
   $('feeds-form').addEventListener('submit', async e => {
     e.preventDefault();
-    const m = $('feeds-msg');
     const port = id => $(id).value === '' ? null : Number($(id).value);
     try {
       showFeeds(await api('PUT', 'api/admin/feeds', {
@@ -237,10 +233,9 @@
         dupe_enabled: $('f-dupe').checked, dupe_server: $('f-dserver').value.trim(),
         dupe_port: port('f-dport'), dupe_login: $('f-dlogin').value.trim(),
       }));
-      m.className = 'okmsg'; m.textContent = 'Saved.';
-      setTimeout(() => { if (m.textContent === 'Saved.') m.textContent = ''; }, 4000);
+      say('feeds-msg', 'Saved.');
       setTimeout(() => loadStatus().catch(() => {}), 2000);
-    } catch (err) { m.className = 'error'; m.textContent = err.message; }
+    } catch (err) { say('feeds-msg', err.message, true); }
   });
 
   // ── stations ──────────────────────────────────────────────────────────────
@@ -306,12 +301,7 @@
       try {
         const { count } = await api('GET', `api/admin/stations/${id}/packets`);
         if (!count) { alertMsg(`No stored packets for ${s.callsign}.`); return; }
-        btn.dataset.armed = '1';
-        btn.textContent = `Purge ${count.toLocaleString()}?`;
-        btn.classList.add('armed');
-        setTimeout(() => {
-          btn.dataset.armed = ''; btn.textContent = 'Purge data'; btn.classList.remove('armed');
-        }, 4000);
+        armed(btn, `Purge ${count.toLocaleString()}?`);
       } catch (e) { alertMsg(e.message, true); }
       finally { btn.disabled = false; }
       return;
@@ -364,23 +354,12 @@
   }
 
   async function deleteStation(id, btn) {
-    // Two-click confirm instead of window.confirm()
-    if (btn.dataset.armed !== '1') {
-      btn.dataset.armed = '1';
-      btn.textContent = 'Confirm';
-      setTimeout(() => { btn.dataset.armed = ''; btn.textContent = 'Delete'; }, 4000);
-      return;
-    }
+    if (!armed(btn)) return;
     try { await api('DELETE', `api/admin/stations/${id}`); loadAll(); }
     catch (e) { alertMsg(e.message, true); }
   }
 
-  function alertMsg(text, isErr) {
-    const m = $('form-msg');
-    m.className = isErr ? 'error' : 'okmsg';
-    m.textContent = text;
-    if (!isErr) setTimeout(() => { if (m.textContent === text) m.textContent = ''; }, 4000);
-  }
+  const alertMsg = (text, isErr) => say('form-msg', text, isErr);
 
   $('station-form').addEventListener('submit', async e => {
     e.preventDefault();
@@ -691,6 +670,23 @@
     loadStations().catch(() => {});
     loadRejects().catch(() => {});
   }
+
+  // ── tables on phones ──────────────────────────────────────────────────────
+  // Under 640px wide the admin tables stack each row as a card (style.css,
+  // table.stack); every cell carries its column name for that layout.
+  function labelCells(table) {
+    const heads = [...(table.tHead?.rows[0]?.cells || [])].map(th => th.textContent.trim());
+    for (const tb of table.tBodies) {
+      for (const tr of tb.rows) {
+        [...tr.cells].forEach((td, i) => { if (!td.colSpan || td.colSpan === 1) td.dataset.label = heads[i] || ''; });
+      }
+    }
+  }
+  document.querySelectorAll('.admin [data-pane] table:not(.rc-fields)').forEach(t => {
+    t.classList.add('stack');
+    labelCells(t);
+    new MutationObserver(() => labelCells(t)).observe(t, { childList: true, subtree: true });
+  });
 
   // ── tabs ──────────────────────────────────────────────────────────────────
   // Tabs as screen readers and keyboards expect: each tab names its panel,

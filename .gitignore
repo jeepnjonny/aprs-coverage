@@ -27,3 +27,9 @@ backups/
 .idea/
 .DS_Store
 Thumbs.db
+*.sqlite-wal
+*.sqlite-shm
+*.partial
+data/
+.coverage
+htmlcov/

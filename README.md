@@ -195,18 +195,27 @@ sudo git pull
 sudo bash update.sh
 ```
 
-`update.sh` copies the code to `/srv/aprs-coverage`, updates Python packages and
-restarts the service. If the nginx snippet changed, it copies the new one to
-`/etc/nginx/snippets`, checks it with `nginx -t`, and reloads nginx. If the check
-fails, it puts the old snippet back. It never touches `.env` or the database in
-`/srv/aprs-coverage/data`.
+`update.sh` copies the code to `/srv/aprs-coverage`, installs the pinned Python
+packages and restarts the service. It then waits up to two minutes for the app to
+answer. If it doesn't (or the package install fails), it puts the previous code
+back from `/srv/aprs-coverage.prev`, restarts that, and exits with an error. If the
+nginx snippet changed, it copies the new one to `/etc/nginx/snippets`, checks it
+with `nginx -t`, and reloads nginx; if the check fails, it puts the old snippet
+back. It never touches `.env` or the database in `/srv/aprs-coverage/data`.
 
-Automatically: `auto-update.sh` checks GitHub and deploys only when there are new
-commits. Add it to root's crontab (`sudo crontab -e`) to check every 10 minutes:
+Automatically: `auto-update.sh` checks GitHub and deploys when the branch has a
+commit that isn't live yet. A deploy that fails is tried again on the next run, up
+to three times for the same commit. Add it to root's crontab (`sudo crontab -e`)
+to check every 10 minutes:
 
 ```cron
-*/10 * * * * /usr/bin/flock -n /tmp/aprs-coverage-update.lock bash /opt/aprs-coverage-src/auto-update.sh >> /var/log/aprs-coverage-update.log 2>&1
+*/10 * * * * /usr/bin/flock -n /run/lock/aprs-coverage-update.lock bash /opt/aprs-coverage-src/auto-update.sh 2>&1 | systemd-cat -t aprs-coverage-update
 ```
+
+Its output goes to the journal (`journalctl -t aprs-coverage-update`), which
+rotates on its own. An older crontab line using `/tmp` and
+`/var/log/aprs-coverage-update.log` keeps working, but that log file grows without
+limit, so switching to the line above is worthwhile.
 
 It refuses to run if the checkout has local edits, so edit `.env` in
 `/srv/aprs-coverage`, not in the checkout.
@@ -225,8 +234,14 @@ cd /srv/aprs-coverage && sudo -u www-data .venv/bin/python -m app.manage logout-
 Upgrading from the single-password version turns that password into an admin
 account named `admin` and logs everyone out once.
 
-```bash
-```
+### Backups
+
+The app copies its database once a day to `/srv/aprs-coverage/data/backups/`
+(`coverage-YYYY-MM-DD.sqlite`) and keeps the newest three. Each copy is the full
+size of the database. Set `BACKUP_KEEP` to keep more, or `0` to turn this off. The
+copies are on the same disk, so also copy that folder somewhere else now and then.
+To restore one, stop the service, copy it over `data/coverage.sqlite` (deleting
+any `coverage.sqlite-wal` and `-shm` files next to it), and start the service.
 
 ### Duplicates feed (your own aprsc)
 
@@ -378,6 +393,11 @@ full list. Restart the service after changing them.
 | `REGION_BBOX` | (off) | `min_lat,min_lon,max_lat,max_lon`; positions outside are rejected |
 | `COOKIE_SECURE` | `1` | `0` only for local testing over plain HTTP |
 | `SESSION_DAYS` | `30` | Admin login lifetime |
+| `BACKUP_KEEP` | `3` | Daily database copies to keep; `0` turns backups off |
+| `BACKUP_DIR` | `data/backups` next to the database | Where the copies go |
+
+A value may have a comment after it (`APRS_LOGIN=K7ABC-CV  # mine`). Put quotes
+around a value that itself contains ` #`.
 
 ## Local development
 
@@ -385,7 +405,7 @@ Windows (PowerShell):
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\pip install -r requirements-dev.txt
+.venv\Scripts\pip install -r requirements.txt -r requirements-dev.txt
 .venv\Scripts\python -m pytest -q
 $env:COOKIE_SECURE="0"; $env:APRS_LOGIN="N0CALL-CV"
 .venv\Scripts\python -m app.manage set-password
@@ -396,7 +416,7 @@ Linux / macOS:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 .venv/bin/python -m pytest -q
 export COOKIE_SECURE=0 APRS_LOGIN=N0CALL-CV
 .venv/bin/python -m app.manage set-password
@@ -405,3 +425,21 @@ export COOKIE_SECURE=0 APRS_LOGIN=N0CALL-CV
 
 Then open http://localhost:8077. The database is created at `data/coverage.sqlite`.
 Set `APRS_ENABLED=0` to work on the map without connecting to APRS-IS.
+
+GitHub Actions runs the tests (Python 3.10 to 3.13), `ruff check`, a JavaScript
+syntax check and `shellcheck` on every push, and `pip-audit` on every push and
+weekly.
+
+### Updating dependencies
+
+`requirements.txt` and `requirements-dev.txt` pin every package, including
+indirect ones, with hashes, so the server installs exactly what was tested. The
+packages you choose are in `requirements.in` and `requirements-dev.in`. After
+changing one, regenerate its `.txt` with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv pip compile --universal --python-version 3.10 --generate-hashes requirements.in -o requirements.txt
+uv pip compile --universal --python-version 3.10 --generate-hashes requirements-dev.in -o requirements-dev.txt
+```
+
+Add `--upgrade` to move everything to the newest versions that fit.

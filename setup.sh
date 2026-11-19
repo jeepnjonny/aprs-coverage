@@ -2,7 +2,7 @@
 # APRS Coverage: first-time server setup (Debian/Ubuntu, nginx, systemd)
 # Serves the app at https://apps.k7swi.org/aprs-coverage/ through the existing
 # apps.k7swi.org nginx site (which already has its TLS certificate).
-# Run from the git checkout as a user with sudo:  bash setup.sh
+# Run from the git checkout:  sudo bash setup.sh   (or bash setup.sh as a user with sudo)
 set -euo pipefail
 
 INSTALL_DIR="/srv/aprs-coverage"
@@ -16,7 +16,7 @@ echo "=== APRS Coverage setup ==="
 
 # ── packages ─────────────────────────────────────────────────────────────────
 sudo apt-get update -qq
-sudo apt-get install -y -qq python3 python3-venv rsync nginx
+sudo apt-get install -y -qq python3 python3-venv rsync nginx git
 
 # ── systemd service ──────────────────────────────────────────────────────────
 # One worker only: the APRS-IS reader runs inside the web process.
@@ -48,9 +48,9 @@ bash "${SRC}/update.sh"
 
 # ── first admin account ──────────────────────────────────────────────────────
 if [ -t 0 ]; then
-  if ! sudo -u "${SERVICE_USER}" bash -c "cd ${INSTALL_DIR} && .venv/bin/python -c \"from app import auth, db; db.init(); import sys; sys.exit(0 if auth.has_admin() else 1)\""; then
+  if ! (cd "${INSTALL_DIR}" && sudo -u "${SERVICE_USER}" .venv/bin/python -c "from app import auth, db; db.init(); import sys; sys.exit(0 if auth.has_admin() else 1)"); then
     echo "Set a password for the admin account (username: admin):"
-    sudo -u "${SERVICE_USER}" bash -c "cd ${INSTALL_DIR} && .venv/bin/python -m app.manage set-password"
+    (cd "${INSTALL_DIR}" && sudo -u "${SERVICE_USER}" .venv/bin/python -m app.manage set-password)
   fi
 fi
 

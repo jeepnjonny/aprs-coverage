@@ -1,32 +1,5 @@
-import importlib
+from conftest import H, login
 
-import pytest
-from fastapi.testclient import TestClient
-
-
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("APRS_ENABLED", "0")
-    monkeypatch.setenv("COOKIE_SECURE", "0")
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "t.sqlite"))
-    from app import config
-    importlib.reload(config)
-    from app import auth, db, ingest, main
-    from app import remotecfg
-    for m in (db, auth, ingest, remotecfg, main):
-        importlib.reload(m)
-    with TestClient(main.app) as c:
-        with db.session() as conn:
-            auth.create_user(conn, "admin", "correct horse battery", role="admin", status="active")
-        c.ingester = main.ingester
-        yield c
-
-
-H = {"X-Requested-With": "fetch"}
-
-
-def login(c):
-    assert c.post("/api/login", json={"username": "admin", "password": "correct horse battery"}).status_code == 200
 
 
 def test_admin_requires_login(client):

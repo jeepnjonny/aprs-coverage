@@ -1,0 +1,6 @@
+# Direct dependencies. requirements.txt is generated from this file with every
+# package pinned and hashed; after editing, regenerate it (see README,
+# "Updating dependencies").
+aprslib==0.7.2
+fastapi==0.162.0
+uvicorn[standard]==0.54.0

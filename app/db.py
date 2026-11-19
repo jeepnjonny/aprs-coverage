@@ -2,6 +2,7 @@
 ingester write while the web handlers read."""
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
 
 from . import config
 
@@ -215,6 +216,34 @@ def _migrate(c: sqlite3.Connection) -> None:
     c.execute("UPDATE packets SET txid = id WHERE txid IS NULL")
 
 
+def infra_calls(c) -> list[str]:
+    """Callsigns of approved igates and digis (the registered infrastructure)."""
+    return [r[0] for r in c.execute("SELECT callsign FROM stations WHERE kind != 'mobile' AND status='approved'")]
+
+
+def station_pos(row) -> tuple[float | None, float | None]:
+    """A stations row's position: the one set by hand, else the one it beacons."""
+    return (row["lat"] if row["lat"] is not None else row["auto_lat"],
+            row["lon"] if row["lon"] is not None else row["auto_lon"])
+
+
+def heard_expr(call: str, match: str) -> tuple[str, str]:
+    """SQL test (and its argument) for "this station heard the packet":
+    'first' = the first RF hop (heard_by), 'any' = anywhere in the path
+    (chain is space padded, ' DIGI1 DIGI2 IGATE '). LIKE's wildcards in the
+    callsign are escaped, so heard_by=% can't match everything."""
+    if match == "first":
+        return "heard_by = ?", call
+    esc = call.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return "chain LIKE ? ESCAPE '\\'", f"% {esc} %"
+
+
+def placeholders(values) -> str:
+    """'?,?,?' for an IN (...) list. (SQLite accepts an empty list: IN () is
+    false and NOT IN () true.)"""
+    return ",".join("?" * len(values))
+
+
 def get_setting(key: str):
     with session() as c:
         row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
@@ -228,3 +257,31 @@ def set_setting(key: str, value: str) -> None:
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
+
+
+# ── backups ──────────────────────────────────────────────────────────────────
+BACKUP_PREFIX = "coverage-"
+
+
+def backup(dest_dir: Path, keep: int, today: str) -> Path | None:
+    """Copy the database to dest_dir/coverage-<today>.sqlite with SQLite's
+    online backup (consistent while the app keeps writing), unless today's
+    copy exists. Keeps the newest `keep` copies. Returns the new file."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    out = dest_dir / f"{BACKUP_PREFIX}{today}.sqlite"
+    if out.exists():
+        return None
+    tmp = out.with_suffix(".partial")
+    src = connect()
+    try:
+        dst = sqlite3.connect(tmp)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    tmp.replace(out)  # only complete copies get the real name
+    for old in sorted(dest_dir.glob(f"{BACKUP_PREFIX}*.sqlite"))[:-keep]:
+        old.unlink()
+    return out

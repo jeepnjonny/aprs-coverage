@@ -387,3 +387,27 @@ table.stats tbody tr.clickable:focus-visible { outline-offset: -2px; }
 @media (max-width: 640px) {
   .admin .admin-tabs { mask-image: linear-gradient(to right, #000 85%, transparent); }
 }
+
+/* map panel: control groups and collapsible explanations */
+.panel h2.group-h { margin: 18px 0 2px; padding-top: 12px; border-top: 1px solid var(--border); }
+.panel h2.group-h:first-child { margin-top: 2px; padding-top: 0; border-top: 0; }
+details.more summary { cursor: pointer; color: var(--accent); font-size: 12px; list-style-position: inside; }
+details.more p { margin: 4px 0 0; }
+
+/* admin tables become one card per row on phones (admin.js labels the cells) */
+@media (max-width: 640px) {
+  .admin table.stack thead { display: none; }
+  .admin table.stack, .admin table.stack tbody, .admin table.stack tr { display: block; width: 100%; }
+  .admin table.stack tr { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; margin: 8px 0; }
+  .admin table.stack td { display: block; position: relative; border: 0; padding: 3px 0; text-align: left; }
+  .admin table.stack td.num { text-align: left; }
+  /* the column name in a left gutter; the cell's own content flows beside it */
+  .admin table.stack td[data-label]:not([data-label=""]) { padding-left: 40%; min-height: 1.6em; }
+  .admin table.stack td[data-label]:not([data-label=""])::before {
+    content: attr(data-label); position: absolute; left: 0; top: 4px; width: 37%; color: var(--muted); font-size: 12px; }
+  .admin table.stack td.actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; padding: 6px 0 0; }
+  .admin table.stack td.actions::before { display: none; }
+  .admin table.stack .actions button { margin-left: 0; }
+}
+/* a two-click confirm, waiting for its second click (admin.js armed()) */
+.btn.armed:not(.purge) { background: var(--bad); border-color: var(--bad); color: #fff; }

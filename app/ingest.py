@@ -11,16 +11,25 @@ Both feeds' server settings are kept in the database and edited on the admin pag
 """
 import asyncio
 import json
-from concurrent.futures import ThreadPoolExecutor
 import logging
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 
 from . import config, db
 from .logbuf import APRS as aprs_log
-from .packets import (LastFix, Outcome, RecentTx, Registry, evaluate, login_server, logresp_server,
-                      strip_dupe_prefix, tx_key)
+from .packets import (
+    LastFix,
+    Outcome,
+    RecentTx,
+    Registry,
+    evaluate,
+    login_server,
+    logresp_server,
+    strip_dupe_prefix,
+    tx_key,
+)
 
 log = logging.getLogger("ingest")
 
@@ -30,6 +39,7 @@ BACKOFF_MIN_S, BACKOFF_MAX_S = 5, 120
 STABLE_SESSION_S = 60
 CRASH_RESTART_S = 30  # wait before restarting a feed loop that crashed  # a connection that lasted this long resets the backoff
 REJECT_KEEP = 2000
+PRUNE_EVERY = 200  # rejected packets stored between prunes
 REJECT_MAX_AGE_S = 2 * 86400  # rejected packets age out after 2 days
 FEEDS_KEY = "feeds"
 OWN_SERVER_KEY = "own_server"  # server name your aprsc gave in its login reply
@@ -73,6 +83,9 @@ class FeedSettings:
 
     def main_target(self) -> tuple[str, int]:
         return self.server or config.APRS_SERVER, self.port or config.APRS_PORT
+
+    def dupe_settings(self) -> tuple:
+        return self.dupe_enabled, self.dupe_server, self.dupe_port, self.dupe_login
 
 
 def load_feeds() -> FeedSettings:
@@ -247,7 +260,8 @@ class Ingester:
         # loop (live streams, remote config, every async request).
         self._db = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest-db")
         self.last_packet_ts: int | None = None
-        self.counts = Counter()
+        self.counts = Counter()  # shown on the admin Feeds tab
+        self._rejects_since_prune = 0
 
     # ── registry and settings ────────────────────────────────────────────────
     def reload(self) -> None:
@@ -274,8 +288,7 @@ class Ingester:
         old, self.feeds = self.feeds, fs
         if old.main_target() != fs.main_target():
             self.main.restart()
-        if (old.dupe_enabled, old.dupe_server, old.dupe_port, old.dupe_login) != \
-                (fs.dupe_enabled, fs.dupe_server, fs.dupe_port, fs.dupe_login):
+        if old.dupe_settings() != fs.dupe_settings():
             self.dupes.restart()
 
     def _set_own_server(self, name: str) -> None:
@@ -386,10 +399,10 @@ class Ingester:
                     "INSERT INTO rejects(ts,source,reason,raw) VALUES(?,?,?,?)",
                     (now, out.source, out.reason, line),
                 )
-                if self.counts["rejects_since_prune"] >= 200:
+                if self._rejects_since_prune >= PRUNE_EVERY:
                     prune_rejects(c, now)
-                    self.counts["rejects_since_prune"] = 0
-            self.counts["rejects_since_prune"] += 1
+                    self._rejects_since_prune = 0
+            self._rejects_since_prune += 1
         return out.kind
 
     def _note_login_server(self, line: str, now: int) -> None:

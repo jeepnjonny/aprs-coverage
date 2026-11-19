@@ -24,9 +24,13 @@ def cell_deg(cell_m: int) -> tuple[float, float]:
     return dlat, dlon
 
 
-def cell_of(lat: float, lon: float, cell_m: int) -> tuple[int, int]:
-    dlat, dlon = cell_deg(cell_m)
+def cell_at(lat: float, lon: float, dlat: float, dlon: float) -> tuple[int, int]:
+    """The square containing a point, given cell_deg() (precomputed in loops)."""
     return math.floor(lon / dlon), math.floor(lat / dlat)
+
+
+def cell_of(lat: float, lon: float, cell_m: int) -> tuple[int, int]:
+    return cell_at(lat, lon, *cell_deg(cell_m))
 
 
 def sql_cell_exprs(cell_m: int) -> tuple[str, str]:

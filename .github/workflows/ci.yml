@@ -3,6 +3,8 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays, for the vulnerability audit
 
 permissions:
   contents: read
@@ -13,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.13"]
+        python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,7 +23,7 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: requirements*.txt
-      - run: pip install -r requirements-dev.txt
+      - run: pip install --require-hashes -r requirements.txt -r requirements-dev.txt
       - run: python -m pytest -q
 
   lint:
@@ -37,3 +39,15 @@ jobs:
         run: for f in static/*.js; do node --check "$f"; done
       - name: shellcheck
         run: shellcheck --severity=warning *.sh
+
+  audit:
+    # Known vulnerabilities in the pinned packages. Also runs weekly, so a new
+    # advisory shows up even when nothing is being pushed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pip-audit
+      - run: pip-audit --strict -r requirements.txt

@@ -18,7 +18,7 @@
   const FAIL_STEPS = [[12, 1.0, 3, '12+'], [5, 0.85, 2.5, '5–11'], [2, 0.65, 2, '2–4'], [1, 0.45, 1.5, '1']];
   const SHADE = [[31, 1.0, '31+'], [12, 0.82, '12–30'], [5, 0.64, '5–11'], [2, 0.45, '2–4'], [1, 0.28, '1']];
   const UNTRACED = '__untraced__', OTHER = '__other__';
-  const $ = id => document.getElementById(id);
+  const { $, esc } = AC;
 
   // ── persisted UI state (per-viewer convenience only) ──────────────────────
   const DEFAULTS = {
@@ -86,16 +86,7 @@
   const isRel = () => S.color === 'reliability';
   const infraCalls = () => STATIONS.filter(s => s.kind !== 'mobile').map(s => s.callsign);
 
-  async function getJSON(url) {
-    const r = await fetch(url, { cache: 'no-store' });
-    if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
-      const msg = typeof d.detail === 'string' ? d.detail
-        : Array.isArray(d.detail) ? d.detail.map(e => e.msg).join('; ') : `HTTP ${r.status}`;
-      throw new Error(msg);
-    }
-    return r.json();
-  }
+  const getJSON = url => AC.request('GET', url, undefined, { cache: 'no-store' });
 
   function timeRange() {
     const now = Math.floor(Date.now() / 1000);
@@ -194,7 +185,6 @@
     if (s < 172800) return `${Math.round(s / 3600)}h ago`;
     return `${Math.round(s / 86400)}d ago`;
   }
-  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
   function rangeText() {
     if (S.preset === 'custom') {

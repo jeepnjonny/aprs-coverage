@@ -1,0 +1,9 @@
+# Keeps the GitHub Actions used by CI up to date. Python packages are locked
+# with hashes by uv (see README, "Updating dependencies"); the weekly pip-audit
+# job in CI flags any with known vulnerabilities.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
