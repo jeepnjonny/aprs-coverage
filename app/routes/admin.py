@@ -10,7 +10,7 @@ from .. import auth, config, db, devicelog, ingest, logbuf
 from ..ingest import ingester
 from ..packets import mobile_matches
 from .shared import (
-    AdminStationIn, callsign_unique, STATION_FIELDS, station_values, _check_owner, _clean_profile, _insert_station, _station_rows, _user,
+    AdminStationIn, CALL_RE, callsign_unique, STATION_FIELDS, station_values, _check_owner, _clean_profile, _insert_station, _station_rows, _user,
 )
 
 router = APIRouter()
@@ -159,8 +159,10 @@ def admin_edit_user(uid: int, body: UserEditIn, admin: dict = Depends(auth.requi
             raise HTTPException(422, f"role must be one of {', '.join(auth.ROLES)}")
         if new["status"] not in auth.STATUSES:
             raise HTTPException(422, f"status must be one of {', '.join(auth.STATUSES)}")
-        call, name, email = _clean_profile(new["callsign"], new["name"], new["email"],
-                                           need_call=new["role"] == "node_owner")
+        # A node owner needs a callsign, but one created without (e.g. by the
+        # command-line tool) can still be edited until someone sets it.
+        need_call = new["role"] == "node_owner" and (bool(old["callsign"]) or new["role"] != old["role"])
+        call, name, email = _clean_profile(new["callsign"], new["name"], new["email"], need_call=need_call)
         was_admin = old["role"] == "admin" and old["status"] == "active"
         if was_admin and (new["role"] != "admin" or new["status"] != "active") and not auth.active_admins(c, uid):
             raise HTTPException(409, "That would leave no active admin")
@@ -225,7 +227,6 @@ def admin_rejects(limit: int = Query(10, ge=1, le=2000)):
 
 # ── feed settings (admin "Stations" tab) ─────────────────────────────────────
 HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$|^\[?[0-9A-Fa-f:]+\]?$")
-LOGIN_RE = re.compile(r"^[A-Z0-9]{1,6}(-[A-Z0-9]{1,2})?$")
 
 
 class FeedsIn(BaseModel):
@@ -255,7 +256,7 @@ class FeedsIn(BaseModel):
     @classmethod
     def _dlogin(cls, v):
         v = v.strip().upper()
-        if v and not LOGIN_RE.fullmatch(v):
+        if v and not CALL_RE.fullmatch(v):
             raise ValueError("login must be a callsign with an optional SSID, e.g. K7ABC-DF")
         return v
 
@@ -303,6 +304,25 @@ LOG_SOURCES = {
     "devicelog": ("Uploaded device log", "Lines stored from device log uploads: what each mobile transmitted "
                   "(tx, and whether it reached APRS-IS) and heard (rx, with signal strength)."),
 }
+def _devicelog_note(r) -> str:
+    """What became of a logged transmission, or what a received line was."""
+    if r["kind"] == "tx":
+        if not r["is_pos"]:
+            return "not a position"
+        if r["txid"]:
+            return f"heard on APRS-IS (tx {r['txid']})"
+        if r["repeat_of"]:
+            return (f"not counted: identical to a packet APRS-IS passed under {devicelog.APRSIS_DUPE_S} s "
+                    f"before (tx {r['repeat_of']}), so APRS-IS dropped it as a duplicate")
+        return "not heard"
+    parts = [f"repeated by {r['via'] or 'an untraced digi'}" if r["echo"] else f"beacon of {r['via']}"]
+    if r["rssi"] is not None:
+        parts.append(f"RSSI {r['rssi']:g} dBm")
+    if r["snr"] is not None:
+        parts.append(f"SNR {r['snr']:g} dB")
+    return ", ".join(parts)
+
+
 _RING_LOGS = {"aprs": logbuf.APRS, "app": logbuf.APP, "devices": logbuf.DEVICES}
 _DB_LOGS = {
     # table, row -> entry
@@ -312,15 +332,7 @@ _DB_LOGS = {
                 + (", duplicates feed" if r["dupe"] else "")}),
     "rejects": ("rejects", lambda r: {"level": r["reason"], "tag": r["source"] or "", "text": r["raw"], "note": ""}),
     "devicelog": ("device_log", lambda r: {
-        "level": r["kind"], "tag": r["device"], "text": r["packet"],
-        "note": ("not a position" if not r["is_pos"] else f"heard on APRS-IS (tx {r['txid']})" if r["txid"]
-                 else f"not counted: identical to a packet APRS-IS passed under {devicelog.APRSIS_DUPE_S} s "
-                      f"before (tx {r['repeat_of']}), so APRS-IS dropped it as a duplicate" if r["repeat_of"]
-                 else "not heard") if r["kind"] == "tx" else
-                ", ".join(x for x in (
-                    (f"repeated by {r['via'] or 'an untraced digi'}" if r["echo"] else f"beacon of {r['via']}"),
-                    f"RSSI {r['rssi']:g} dBm" if r["rssi"] is not None else "",
-                    f"SNR {r['snr']:g} dB" if r["snr"] is not None else "") if x)}),
+        "level": r["kind"], "tag": r["device"], "text": r["packet"], "note": _devicelog_note(r)}),
     "nodecfg": ("node_config_log", lambda r: {
         "level": r["result"], "tag": f"{r['login']} > {r['callsign']}" if r["login"] else r["callsign"],
         "text": f"{r['command']}  =>  {r['detail']}", "note": ""}),

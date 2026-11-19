@@ -41,7 +41,7 @@ def api_stations():
         call = r["callsign"]
         lat, lon = db.station_pos(r)
         if r["kind"] == "mobile":
-            last = max((t for m, t in mob.items() if _matches(m, call)), default=None)
+            last = max((t for m, t in mob.items() if mobile_matches(m, call)), default=None)
         else:
             last = max(filter(None, [heard.get(call), gated.get(call)]), default=None)
         out.append({
@@ -49,10 +49,6 @@ def api_stations():
             "hardware": r["hardware"], "lat": lat, "lon": lon, "last_beacon": r["last_beacon"], "last_heard": last,
         })
     return out
-
-
-def _matches(call: str, pattern: str) -> bool:
-    return mobile_matches(call, pattern)
 
 
 @router.get("/api/mobiles")
@@ -93,7 +89,7 @@ def api_coverage(
     # and which mobiles were there, whatever the color mode.
     cells: dict[tuple[int, int], list] = {}
     for r in rows:
-        e = cells.setdefault((r["x"], r["y"]), [r["x"], r["y"], totals[(r["x"], r["y"])], 0, {}, {}, {}, r["first"]])
+        e = cells.setdefault((r["x"], r["y"]), [r["x"], r["y"], totals.get((r["x"], r["y"]), 0), 0, {}, {}, {}, r["first"]])
         e[3] = max(e[3], r["last"])
         e[5][r["h"]] = e[5].get(r["h"], 0) + r["n"]
         e[6][r["m"]] = e[6].get(r["m"], 0) + r["n"]
@@ -379,7 +375,7 @@ def add_event(body: EventIn, user: dict = Depends(auth.require_active)):
         raise HTTPException(422, f"Note: 1 to {devicelog.MAX_NOTE_LEN} characters")
     with db.session() as c:
         try:
-            devicelog._device_kind(c, user, device)
+            devicelog.device_kind(c, user, device)
         except devicelog.UploadError as e:
             raise HTTPException(e.status, str(e))
         cur = c.execute("INSERT OR IGNORE INTO device_events(device, ts, text, source, user_id) "

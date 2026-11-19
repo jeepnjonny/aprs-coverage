@@ -40,8 +40,10 @@ def _where(c, start, end, mobiles, heard_by, match):
         calls = [h for h in heard_by if not h.startswith("__")]
         if calls:
             if match == "any":
-                ors += ["chain LIKE ?"] * len(calls)
-                args += [f"% {h} %" for h in calls]
+                for h in calls:
+                    sql, arg = db.heard_expr(h, "any")
+                    ors.append(sql)
+                    args.append(arg)
             else:
                 ors.append(f"heard_by IN ({db.placeholders(calls)})")
                 args += calls

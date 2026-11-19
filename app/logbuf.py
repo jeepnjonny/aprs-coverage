@@ -1,6 +1,6 @@
 """In-memory ring-buffer logs for the admin Logs tab.
 
-Two buffers live only in memory and start empty after a restart:
+Three buffers live only in memory and start empty after a restart:
   * APRS: every line to and from APRS-IS, on both the read-only feed connection
     and the remote-config sending connection.
   * APP: this app's own Python log records.

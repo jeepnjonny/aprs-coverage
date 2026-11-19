@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import re
 import secrets
+import threading
 import time
 from collections import defaultdict, deque
 
@@ -32,7 +33,44 @@ MIN_PASSWORD = 10
 # is much higher, so one address (8 tries) can't lock someone else out; it
 # takes a spread-out guessing attack to reach it.
 MAX_FAILS, MAX_FAILS_PER_USER, WINDOW = 8, 100, 900
-_fails: dict[str, deque] = defaultdict(deque)
+
+
+class SlidingWindow:
+    """Counts events per key over the last `window` seconds. Thread-safe (the
+    endpoints run in worker threads); keys with no recent events are dropped,
+    so it can't grow with every username or address ever tried."""
+
+    def __init__(self, window: float):
+        self.window = window
+        self._hits: dict[str, deque] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def count(self, key: str) -> int:
+        with self._lock:
+            q = self._hits.get(key)
+            if q is None:
+                return 0
+            cutoff = time.time() - self.window
+            while q and q[0] < cutoff:
+                q.popleft()
+            if not q:
+                del self._hits[key]
+            return len(q)
+
+    def add(self, key: str) -> None:
+        with self._lock:
+            self._hits[key].append(time.time())
+
+    def keys(self) -> list[str]:
+        with self._lock:
+            return list(self._hits)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._hits.clear()
+
+
+_fails = SlidingWindow(WINDOW)
 
 
 def hash_password(pw: str) -> str:
@@ -69,28 +107,27 @@ def _limit_for(key: str) -> int:
 
 
 def check_rate_limit(*keys: str) -> None:
-    now = time.time()
     for key in keys:
-        q = _fails.get(key)
-        if q is None:
-            continue
-        while q and q[0] < now - WINDOW:
-            q.popleft()
-        if not q:
-            _fails.pop(key, None)  # don't keep a key per username ever tried
-            continue
-        if len(q) >= _limit_for(key):
-            raise HTTPException(429, "Too many failed logins, try again later")
+        if _fails.count(key) >= _limit_for(key):
+            raise HTTPException(429, "Too many failed attempts, try again later")
 
 
 def record_failure(*keys: str) -> None:
     for key in keys:
-        _fails[key].append(time.time())
+        _fails.add(key)
+
+
+def password_problem(pw: str) -> str | None:
+    """Why a new password isn't acceptable, or None. (Used by the web and the CLI.)"""
+    if len(pw) < MIN_PASSWORD:
+        return f"Password must be at least {MIN_PASSWORD} characters"
+    return None
 
 
 def check_password_rules(pw: str) -> None:
-    if len(pw) < MIN_PASSWORD:
-        raise HTTPException(422, f"Password must be at least {MIN_PASSWORD} characters")
+    problem = password_problem(pw)
+    if problem:
+        raise HTTPException(422, problem)
 
 
 # ── users ────────────────────────────────────────────────────────────────────

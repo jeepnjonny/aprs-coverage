@@ -222,6 +222,17 @@ def station_pos(row) -> tuple[float | None, float | None]:
             row["lon"] if row["lon"] is not None else row["auto_lon"])
 
 
+def heard_expr(call: str, match: str) -> tuple[str, str]:
+    """SQL test (and its argument) for "this station heard the packet":
+    'first' = the first RF hop (heard_by), 'any' = anywhere in the path
+    (chain is space padded, ' DIGI1 DIGI2 IGATE '). LIKE's wildcards in the
+    callsign are escaped, so heard_by=% can't match everything."""
+    if match == "first":
+        return "heard_by = ?", call
+    esc = call.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return "chain LIKE ? ESCAPE '\\'", f"% {esc} %"
+
+
 def placeholders(values) -> str:
     """'?,?,?' for an IN (...) list. (SQLite accepts an empty list: IN () is
     false and NOT IN () true.)"""

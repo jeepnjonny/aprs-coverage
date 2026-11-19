@@ -61,7 +61,7 @@ def test_expired_failure_keys_are_dropped(monkeypatch):
     auth.record_failure("10.0.0.1", "u:someone")
     monkeypatch.setattr(auth.time, "time", lambda: 10**10)
     auth.check_rate_limit("10.0.0.1", "u:someone")
-    assert auth._fails == {}
+    assert auth._fails.keys() == []
 
 
 # ── feeds: control calls from worker threads run on the event loop ──────────

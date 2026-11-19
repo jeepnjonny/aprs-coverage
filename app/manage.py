@@ -15,8 +15,9 @@ from . import auth, db
 
 def _ask_password() -> str | None:
     pw = getpass.getpass("New password: ")
-    if len(pw) < auth.MIN_PASSWORD:
-        print(f"Password must be at least {auth.MIN_PASSWORD} characters.")
+    problem = auth.password_problem(pw)
+    if problem:
+        print(problem + ".")
         return None
     if pw != getpass.getpass("Repeat: "):
         print("Passwords do not match.")
@@ -34,6 +35,9 @@ def main(argv: list[str]) -> int:
 
     if cmd == "set-password":
         username = args[0] if args else "admin"
+        if not auth.USERNAME_RE.fullmatch(username):
+            print("Username: 3 to 32 letters, digits, dots, dashes or underscores.")
+            return 1
         pw = _ask_password()
         if pw is None:
             return 1
@@ -70,9 +74,15 @@ def main(argv: list[str]) -> int:
 
     if cmd == "set-role" and len(args) == 2 and args[1] in auth.ROLES:
         with db.session() as c:
-            if c.execute("UPDATE users SET role=? WHERE username=?", (args[1], args[0])).rowcount == 0:
+            u = _get(c, args[0])
+            if u is None:
                 print(f"No user {args[0]}.")
                 return 1
+            if (args[1] != "admin" and u["role"] == "admin" and u["status"] == "active"
+                    and not auth.active_admins(c, u["id"])):
+                print(f"{args[0]} is the only active admin. Make someone else an admin first.")
+                return 1
+            c.execute("UPDATE users SET role=? WHERE id=?", (args[1], u["id"]))
         print(f"{args[0]} is now {args[1]}.")
         return 0
 

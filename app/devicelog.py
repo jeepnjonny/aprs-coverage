@@ -121,7 +121,7 @@ def last_digi(path: list[str]) -> tuple[bool, str | None]:
 
 
 # ── upload ───────────────────────────────────────────────────────────────────
-def _device_kind(c, user: dict, device: str) -> str:
+def device_kind(c, user: dict, device: str) -> str:
     """'mobile' or 'node' for an approved device of this user's (any for an
     admin). A mobile registered as a pattern (K7ABC-*) uploads per SSID."""
     admin = user["role"] == "admin"
@@ -159,7 +159,7 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
         raise UploadError(422, "device is required")
     if len(entries) > MAX_ENTRIES:
         raise UploadError(413, f"At most {MAX_ENTRIES} entries per upload")
-    kind = _device_kind(c, user, device)
+    kind = device_kind(c, user, device)
     sender = device.split(":", 1)[0]
     nodes = {r[0].upper() for r in c.execute(
         "SELECT callsign FROM stations WHERE kind != 'mobile' AND status='approved'")}
@@ -293,7 +293,13 @@ def match(c, device: str, start: int, end: int) -> int:
 
 def _ago(s: int) -> str:
     s = abs(s)
-    return f"{s} s" if s < 120 else f"{s // 60} min" if s < 7200 else f"{s // 3600} h" if s < 172800 else f"{s // 86400} days"
+    if s < 120:
+        return f"{s} s"
+    if s < 7200:
+        return f"{s // 60} min"
+    if s < 172800:
+        return f"{s // 3600} h"
+    return f"{s // 86400} days"
 
 
 def explain_unheard(c, device: str, ts: int, info: str, now: int | None = None) -> str:

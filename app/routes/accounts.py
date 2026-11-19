@@ -4,7 +4,6 @@ import re
 import sqlite3
 import threading
 import time
-from collections import defaultdict, deque
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -116,7 +115,7 @@ def _start_session(request: Request, response: Response, user_id: int) -> None:
 MAX_DEVICES = 20  # per user
 MAX_PENDING_ACCOUNTS = 25  # sign-ups pause while this many wait for approval
 SIGNUPS_PER_IP, SIGNUP_WINDOW = 5, 3600
-_signups: dict[str, deque] = defaultdict(deque)
+_signups = auth.SlidingWindow(SIGNUP_WINDOW)
 # Sign-ups run in worker threads; the per-IP and pending-account limits are
 # check-then-act, so one sign-up at a time (they're rare, and slow anyway).
 _signup_lock = threading.Lock()
@@ -169,11 +168,7 @@ class SignupIn(BaseModel):
 
 def _signup_locked(body, ip: str) -> tuple[dict, list[str]]:
     """The checks and inserts of a sign-up; call with _signup_lock held."""
-    now = time.time()
-    recent = _signups[ip]
-    while recent and recent[0] < now - SIGNUP_WINDOW:
-        recent.popleft()
-    if len(recent) >= SIGNUPS_PER_IP:
+    if _signups.count(ip) >= SIGNUPS_PER_IP:
         raise HTTPException(429, "Too many sign-ups from here. Try again later.")
     username = body.username.strip()
     if not auth.USERNAME_RE.fullmatch(username):
@@ -204,9 +199,7 @@ def _signup_locked(body, ip: str) -> tuple[dict, list[str]]:
         for d in body.devices:
             _insert_station(c, d, owner_id=uid, status="pending")
         user = _user(c, uid)
-    recent.append(now)
-    for k in [k for k, q in _signups.items() if not q]:
-        del _signups[k]  # forget addresses with no recent sign-ups
+    _signups.add(ip)
     return user, calls
 
 
@@ -250,7 +243,12 @@ class PasswordIn(BaseModel):
 
 @router.post("/api/account/password")
 def change_password(body: PasswordIn, request: Request, user: dict = Depends(auth.require_user)):
+    # Rate-limited like logins, so a stolen session can't be used to guess
+    # the password itself.
+    key = f"pw:{user['id']}"
+    auth.check_rate_limit(key)
     if not auth.verify_password(body.current, user["pw_hash"]):
+        auth.record_failure(key)
         raise HTTPException(400, "Current password is wrong")
     auth.check_password_rules(body.new)
     with db.session() as c:
@@ -268,6 +266,7 @@ def withdraw_signup(request: Request, response: Response, user: dict = Depends(a
         c.execute("DELETE FROM stations WHERE owner_id=?", (user["id"],))
         c.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
         c.execute("DELETE FROM users WHERE id=?", (user["id"],))
+    ingester.reload()  # in case an admin had approved one of the devices already
     response.delete_cookie(auth.COOKIE, path=_cookie_path(request))
     return {"ok": True}
 

@@ -261,10 +261,8 @@ def compare_nodes(c, a: str, b: str, start: int, end: int, bucket: str = "week",
                   match: str = "first", mobiles: list[str] | None = None) -> dict:
     """Of the transmissions anyone heard, which each station heard.
     match 'first': heard the mobile directly; 'any': anywhere in the path."""
-    if match == "first":
-        expr, pa, pb = "heard_by = ?", a, b
-    else:
-        expr, pa, pb = "chain LIKE ?", f"% {a} %", f"% {b} %"
+    expr, pa = db.heard_expr(a, match)
+    _, pb = db.heard_expr(b, match)
     where, args = "ts BETWEEN ? AND ?", [start, end]
     if mobiles:
         where += f" AND mobile IN ({db.placeholders(mobiles)})"
@@ -337,7 +335,7 @@ def _node_cells(c, station, start, end, cell_m, match, day_of):
     """Per square (of where each transmission was sent from): of the
     transmissions anyone heard, how many this station heard, also per day."""
     dlat, dlon = grid.cell_deg(cell_m)
-    expr, arg = ("heard_by = ?", station) if match == "first" else ("chain LIKE ?", f"% {station} %")
+    expr, arg = db.heard_expr(station, match)
     cells: dict = {}
     days: dict = {}
     for r in c.execute(f"SELECT MIN(ts) AS ts, MAX(lat) AS lat, MAX(lon) AS lon, MAX({expr}) AS h FROM packets "
