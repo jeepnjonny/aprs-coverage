@@ -15,11 +15,6 @@ from ..ingest import ingester
 UNTRACED, OTHER = "__untraced__", "__other__"
 
 
-def _infra_calls(c) -> list[str]:
-    return [r["callsign"] for r in c.execute(
-        "SELECT callsign FROM stations WHERE kind != 'mobile' AND status='approved'")]
-
-
 def _csv(v: str | None) -> list[str] | None:
     """None = no filter (all). '' = an explicit empty selection."""
     if v is None:
@@ -50,7 +45,7 @@ def _where(c, start, end, mobiles, heard_by, match):
         if UNTRACED in heard_by:
             ors.append("heard_by IS NULL")
         if OTHER in heard_by:
-            infra = _infra_calls(c)
+            infra = db.infra_calls(c)
             if infra:
                 ors.append(f"(heard_by IS NOT NULL AND heard_by NOT IN ({db.placeholders(infra)}))")
                 args += infra
@@ -217,6 +212,7 @@ def _check_owner(c, owner_id: int | None) -> None:
 
 
 GATED_WINDOW_S = 7 * 86400
+_NOT_GATED = {"main": 0, "main_last": None, "dupe": 0, "dupe_last": None}  # packets gated per feed
 
 
 def _station_rows(where: str = "1", args: tuple = ()) -> list[dict]:
@@ -236,10 +232,10 @@ def _station_rows(where: str = "1", args: tuple = ()) -> list[dict]:
             "SELECT igate, dupe, COUNT(*) AS n, MAX(ts) AS last FROM packets WHERE ts >= ? GROUP BY igate, dupe",
             (since,),
         ):
-            g = gated.setdefault(r["igate"].upper(), {"main": 0, "main_last": None, "dupe": 0, "dupe_last": None})
+            g = gated.setdefault(r["igate"].upper(), dict(_NOT_GATED))
             pre = "dupe" if r["dupe"] else "main"
             g[pre], g[f"{pre}_last"] = r["n"], r["last"]
-    empty = {"main": 0, "main_last": None, "dupe": 0, "dupe_last": None}
+    empty = _NOT_GATED
     for s in rows:
         if s["kind"] != "mobile":
             s["own_server"] = ingester.own_server  # to compare with is_server

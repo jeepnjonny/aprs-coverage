@@ -216,6 +216,11 @@ def _migrate(c: sqlite3.Connection) -> None:
     c.execute("UPDATE packets SET txid = id WHERE txid IS NULL")
 
 
+def infra_calls(c) -> list[str]:
+    """Callsigns of approved igates and digis (the registered infrastructure)."""
+    return [r[0] for r in c.execute("SELECT callsign FROM stations WHERE kind != 'mobile' AND status='approved'")]
+
+
 def station_pos(row) -> tuple[float | None, float | None]:
     """A stations row's position: the one set by hand, else the one it beacons."""
     return (row["lat"] if row["lat"] is not None else row["auto_lat"],

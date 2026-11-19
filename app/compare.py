@@ -76,6 +76,12 @@ def bucket_start(ts: int, bucket: str, tz_s: int = 0) -> int:
     return b - tz_s
 
 
+def share(k: int, n: int) -> dict:
+    """k of n as {pct, lo, hi}: the share and its 95% interval (None if n=0)."""
+    lo, hi = wilson(k, n) or (None, None)
+    return {"pct": _ratio(k, n), "lo": lo, "hi": hi}
+
+
 def _ratio(k, n):
     return k / n if n else None
 
@@ -203,23 +209,20 @@ def mobile_series(c, mobile: str, start: int, end: int, bucket: str, tz_s: int,
     for x in sorted(b.values(), key=lambda r: r["t"]):
         if x["method"] is None:
             x["sent"] = x["heard"] = 0
-        ci = wilson(x["heard"], x["sent"])
         rows.append({
             "t": x["t"], "method": x["method"], "sent": x["sent"], "heard": x["heard"],
-            "pct": _ratio(x["heard"], x["sent"]), "lo": ci[0] if ci else None, "hi": ci[1] if ci else None,
+            **share(x["heard"], x["sent"]),
             "packets": x["packets"], "direct_pct": _ratio(x["direct"], x["packets"]),
             "stations": round(x["stations"] / x["packets"], 2) if x["packets"] else None,
         })
     sent = sum(r["sent"] for r in rows)
     got = sum(r["heard"] for r in rows)
     methods = {r["method"] for r in rows if r["method"]}
-    ci = wilson(got, sent)
     pk = sum(r["packets"] for r in rows)
     return {
         "mobile": mobile, "buckets": rows, "interval_s": est_interval, "interval_given": bool(interval),
         "total": {
-            "sent": sent, "heard": got, "pct": _ratio(got, sent), "lo": ci[0] if ci else None,
-            "hi": ci[1] if ci else None, "packets": pk,
+            "sent": sent, "heard": got, **share(got, sent), "packets": pk,
             "method": "mixed" if len(methods) > 1 else (methods.pop() if methods else None),
             "direct_pct": _ratio(sum(x["direct"] for x in b.values()), pk),
             "stations": round(sum(x["stations"] for x in b.values()) / pk, 2) if pk else None,
@@ -301,15 +304,12 @@ def compare_nodes(c, a: str, b: str, start: int, end: int, bucket: str = "week",
     for x in sorted(bk.values(), key=lambda r: r["t"]):
         n = x["total"]
         ka, kb = x["both"] + x["a_only"], x["both"] + x["b_only"]
-        ca, cb = wilson(ka, n), wilson(kb, n)
-        out.append({**x, "a_pct": _ratio(ka, n), "b_pct": _ratio(kb, n),
-                    "a_lo": ca and ca[0], "a_hi": ca and ca[1], "b_lo": cb and cb[0], "b_hi": cb and cb[1]})
+        sa, sb = share(ka, n), share(kb, n)
+        out.append({**x, **{f"a_{k}": v for k, v in sa.items()}, **{f"b_{k}": v for k, v in sb.items()}})
     tot = {k: sum(x[k] for x in out) for k in ("total", "both", "a_only", "b_only", "neither")}
     for call, side in ((a, "a"), (b, "b")):
         k = tot["both"] + tot[f"{side}_only"]
-        ci = wilson(k, tot["total"])
-        tot[f"{side}_pct"] = _ratio(k, tot["total"])
-        tot[f"{side}_lo"], tot[f"{side}_hi"] = (ci or (None, None))
+        tot.update({f"{side}_{key}": v for key, v in share(k, tot["total"]).items()})
     for lst in bands.values():
         for band in lst:
             band["pct"] = _ratio(band["heard"], band["n"])
@@ -326,9 +326,7 @@ CHANGE_MIN_BEACONS = 3   # a square needs this many beacons on both sides to lis
 
 
 def _side(heard: int, sent: int, start: int, end: int) -> dict:
-    ci = wilson(heard, sent)
-    return {"start": start, "end": end, "heard": heard, "sent": sent, "pct": _ratio(heard, sent),
-            "lo": ci[0] if ci else None, "hi": ci[1] if ci else None}
+    return {"start": start, "end": end, "heard": heard, "sent": sent, **share(heard, sent)}
 
 
 def _node_cells(c, station, start, end, cell_m, match, day_of):
@@ -391,9 +389,7 @@ def compare_change(c, station: str, at: int, days: int | None, cell_m: int = 500
         rows = []
         for d in sorted(out):
             h, n = out[d]
-            ci = wilson(h, n)
-            rows.append({"t": d, "side": side, "heard": h, "sent": n, "pct": _ratio(h, n),
-                         "lo": ci[0] if ci else None, "hi": ci[1] if ci else None})
+            rows.append({"t": d, "side": side, "heard": h, "sent": n, **share(h, n)})
         return rows
 
     hb, nb = total(cb, route_b)

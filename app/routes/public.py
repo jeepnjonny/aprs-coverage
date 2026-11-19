@@ -145,7 +145,7 @@ def api_failures(
     start, end = _time_range(start, end)
     cell = _cell_size(cell)
     cx, cy = grid.sql_cell_exprs(cell)
-    settled = int(time.time()) - devicelog.MATCH_AFTER_S - 30
+    settled = int(time.time()) - devicelog.SETTLE_S
     clauses, args = ["kind='tx'", "is_pos=1", "repeat_of IS NULL", "ts >= ?", "ts <= ?"], [start, end]
     mob = _csv(mobiles)
     if mob is not None:

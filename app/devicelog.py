@@ -14,7 +14,7 @@ from collections import defaultdict
 import aprslib
 
 from . import db
-from .packets import POSITION_FORMATS, is_alias, mobile_matches, object_key
+from .packets import POSITION_FORMATS, is_alias, mobile_matches, object_key, used_hops
 
 KEY_PREFIX = "acv_"
 MAX_KEYS = 5                      # per user
@@ -26,6 +26,7 @@ MAX_NOTE_LEN = 300                # characters in a dated note (from the app or 
 # received this many seconds before/after it (phone and server clocks, digi and
 # igate delays).
 MATCH_BEFORE_S, MATCH_AFTER_S = 30, 90
+SETTLE_S = MATCH_AFTER_S + 30  # a transmission this old has had its chance to be heard
 # APRS-IS servers drop a packet identical (same source and information field)
 # to one they passed within this many seconds. A tracker beaconing faster than
 # that from the same spot repeats itself, and those repeats never reach APRS-IS
@@ -112,10 +113,9 @@ def last_digi(path: list[str]) -> tuple[bool, str | None]:
     """(was digipeated, callsign of the digi that last sent it). The '*' marks
     the last used hop; the sender is the last traced callsign among used hops,
     None if only aliases were used (an untraced digi)."""
-    used_to = max((i for i, h in enumerate(path) if h.endswith("*")), default=-1)
-    if used_to < 0:
+    used = used_hops(path)
+    if not used:
         return False, None
-    used = [h.rstrip("*").upper() for h in path[: used_to + 1]]
     calls = [h for h in used if not is_alias(h)]
     return True, (calls[-1] if calls else None)
 
@@ -161,8 +161,7 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
         raise UploadError(413, f"At most {MAX_ENTRIES} entries per upload")
     kind = device_kind(c, user, device)
     sender = device.split(":", 1)[0]
-    nodes = {r[0].upper() for r in c.execute(
-        "SELECT callsign FROM stations WHERE kind != 'mobile' AND status='approved'")}
+    nodes = {call.upper() for call in db.infra_calls(c)}
     res = {"accepted": 0, "duplicates": 0, "ignored": 0, "errors": []}
     tx_span = [None, None]
     tx_ids: list[int] = []
@@ -177,7 +176,7 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
         t = e.get("type")
         ts = _number(e.get("ts"), now - MAX_AGE_S, now + MAX_FUTURE_S)
         if ts is None:
-            err(i, "ts must be unix seconds within the last 400 days")
+            err(i, f"ts must be unix seconds within the last {MAX_AGE_S // 86400} days")
             continue
         ts = int(ts)
         if t == "event":
@@ -307,7 +306,7 @@ def explain_unheard(c, device: str, ts: int, info: str, now: int | None = None) 
     rejected by a quality check, stored with different text (an app decoding
     problem), the station isn't set up to be collected, or nothing arrived."""
     now = now or int(time.time())
-    if ts > now - MATCH_AFTER_S - 30:
+    if ts > now - SETTLE_S:
         return "not heard yet (its packet may still be on the way)"
     rej = c.execute("SELECT ts, reason FROM rejects WHERE source=? AND ts BETWEEN ? AND ? ORDER BY ABS(ts-?) LIMIT 1",
                     (device, ts - MATCH_BEFORE_S, ts + MATCH_AFTER_S, ts)).fetchone()
