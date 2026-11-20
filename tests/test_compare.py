@@ -134,6 +134,23 @@ def test_rematch_when_packets_arrive_after_upload(client):
         assert c.execute("SELECT txid FROM device_log").fetchone()[0] is not None
 
 
+def test_newly_missed_announces_each_lost_beacon_once(client):
+    register(client)
+    key = key_for(client)
+    client.post("/api/devicelog", headers={"Authorization": f"Bearer {key}"}, json={
+        "device": "K7ABC-9", "entries": [{"type": "tx", "ts": T + i * 60, "packet": tx_line(i)} for i in range(3)]})
+    client.ingester.handle_line(is_line(0), now=T + 2)
+    client.ingester.handle_line(is_line(2), now=T + 122)  # arrived after the upload: re-matched first
+    seen: set[int] = set()
+    with db.session() as c:
+        assert devicelog.newly_missed(c, seen, now=T + 60) == []  # nothing settled yet
+        got = devicelog.newly_missed(c, seen, now=T + 300)
+        assert [(m["mobile"], m["ts"]) for m in got] == [("K7ABC-9", T + 60)]
+        assert round(got[0]["lat"], 2) == 43.61
+        assert devicelog.newly_missed(c, seen, now=T + 400) == []  # announced once
+        assert devicelog.newly_missed(c, seen, now=T + 3600) == [] and not seen  # too old: pruned
+
+
 # ── comparisons ──────────────────────────────────────────────────────────────
 def test_compare_mobiles_exact_vs_estimated(client):
     register(client)

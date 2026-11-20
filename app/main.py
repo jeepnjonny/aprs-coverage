@@ -49,10 +49,12 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(ingester.run())
     rematch = asyncio.create_task(_rematch_loop())
     backups = asyncio.create_task(_backup_loop())
+    missed = asyncio.create_task(_missed_loop())
     yield
     task.cancel()
     rematch.cancel()
     backups.cancel()
+    missed.cancel()
     await remote.sender.close()
 
 
@@ -70,6 +72,29 @@ async def _rematch_loop():
             await asyncio.to_thread(run)
         except Exception:
             logging.getLogger("devicelog").exception("re-matching device logs failed")
+
+
+async def _missed_loop():
+    """Announce on the live feed each logged beacon that APRS-IS never heard,
+    once it has had its chance (devicelog.SETTLE_S), for the map's red X."""
+    seen: set[int] = set()
+
+    def run():
+        with db.session() as c:
+            return devicelog.newly_missed(c, seen)
+    first = True
+    while True:
+        await asyncio.sleep(30)
+        try:
+            missed = await asyncio.to_thread(run)
+        except Exception:
+            logging.getLogger("devicelog").exception("checking for missed beacons failed")
+            continue
+        if first:  # after a restart, don't replay the last few minutes
+            first = False
+            continue
+        for ev in missed:
+            ingester._fan_out({**ev, "missed": True})
 
 
 async def _backup_loop():

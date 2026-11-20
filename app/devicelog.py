@@ -334,6 +334,35 @@ def explain_unheard(c, device: str, ts: int, info: str, now: int | None = None) 
     return f"not heard: no packet from {device} reached APRS-IS near this time ({when})"
 
 
+# Live "missed beacon" flashes: a logged position transmission that has had its
+# chance to be heard (SETTLE_S) and wasn't. Only ones sent this recently are
+# announced; older uploads are history, not live.
+MISSED_LIVE_S = 10 * 60
+
+
+def newly_missed(c, seen: set[int], now: int | None = None) -> list[dict]:
+    """Settled, unheard position transmissions from the last MISSED_LIVE_S not
+    already in `seen` (ids announced before; updated here and pruned of rows
+    too old to come up again). Re-matches first, so a live upload that beat
+    APRS-IS isn't reported lost when its packet has since arrived."""
+    now = now or int(time.time())
+    lo, hi = now - MISSED_LIVE_S, now - SETTLE_S
+    q = ("SELECT id, device, ts, lat, lon FROM device_log WHERE kind='tx' AND is_pos=1 AND txid IS NULL "
+         "AND repeat_of IS NULL AND lat IS NOT NULL AND ts BETWEEN ? AND ?")
+    devices = {r["device"] for r in c.execute(q, (lo, hi)) if r["id"] not in seen}
+    for d in devices:
+        match(c, d, lo - MATCH_AFTER_S - MATCH_BEFORE_S, now)
+    out = []
+    ids = set()
+    for r in c.execute(q, (lo, hi)):
+        ids.add(r["id"])
+        if r["id"] not in seen:
+            out.append({"mobile": r["device"], "ts": r["ts"], "lat": r["lat"], "lon": r["lon"]})
+    seen.intersection_update(ids)
+    seen.update(ids)
+    return out
+
+
 def rematch_recent(c, now: int | None = None) -> int:
     """Logs can be uploaded live, before APRS-IS has delivered the packets.
     Re-match recent unmatched transmissions; the ingester's run loop calls

@@ -165,6 +165,12 @@ table.stats tbody tr.clickable:hover { background: color-mix(in srgb, var(--acce
 .pulse { animation: pulse 1.6s ease-out 3; }
 @keyframes pulse { 0% { stroke-width: 2; stroke-opacity: 1; } 100% { stroke-width: 18; stroke-opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+/* missed beacon: a red X that pulses like a live packet */
+.missed-x { background: none; border: none; }
+.missed-x svg { display: block; overflow: visible; filter: drop-shadow(0 0 1px #fff); animation: missed 1.6s ease-out 3; }
+.missed-x path { stroke: #e0201b; stroke-width: 3.5; stroke-linecap: round; fill: none; }
+@keyframes missed { 0% { transform: scale(1.8); opacity: .4; } 100% { transform: scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .missed-x svg { animation: none; } }
 
 /* "OpenStreetMap (dark)" basemap: OSM tiles inverted, keeping hues roughly right */
 .tiles-dark { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9); }

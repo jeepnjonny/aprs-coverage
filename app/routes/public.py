@@ -269,7 +269,9 @@ async def api_live(request: Request):
                     ev = await asyncio.wait_for(q.get(), 20)
                     if ev is None:  # server stopping
                         break
-                    yield f"data: {json.dumps(ev)}\n\n"
+                    # Missed beacons are a named event, so pages that don't know them ignore them.
+                    name = "event: missed\n" if ev.pop("missed", False) else ""
+                    yield f"{name}data: {json.dumps(ev)}\n\n"
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"
         finally:

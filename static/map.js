@@ -23,7 +23,7 @@
   // ── persisted UI state (per-viewer convenience only) ──────────────────────
   const DEFAULTS = {
     preset: '604800', from: null, to: null, toNow: false, color: 'single', singleColor: '#2f81f7',
-    shade: true, cell: 1000, opacity: 60, borders: true, stations: true, live: true, me: false, follow: false,
+    shade: true, cell: 1000, opacity: 60, borders: true, stations: true, live: true, missed: true, me: false, follow: false,
     basemap: 'osm', match: 'first', mobiles: null, heard: null,   // null = all selected
     mobilesSeen: null, heardSeen: null,                           // what existed when the selection was saved
     hw: null, hwScope: 'both',                                    // hardware filter; null = all
@@ -79,6 +79,7 @@
   const cellLayer = L.layerGroup().addTo(map);
   const stationLayer = L.layerGroup().addTo(map);
   const liveLayer = L.layerGroup().addTo(map);
+  const missedLayer = L.layerGroup().addTo(map);  // red X: beacons a tracker logged sending that APRS-IS never heard
   const meRenderer = L.svg({ pane: 'me' });
 
   // ── data ──────────────────────────────────────────────────────────────────
@@ -640,6 +641,7 @@
         liveRetry = Math.min(liveRetry * 2, 60000);
       }
     };
+    es.addEventListener('missed', flashMissed);
     es.onmessage = ev => {
       let p; try { p = JSON.parse(ev.data); } catch { return; }
       if (S.live) {
@@ -657,6 +659,16 @@
       }
       setLive('ok', 'live · ' + stationName(p.mobile));
     };
+  }
+  const MISSED_ICON = L.divIcon({ className: 'missed-x', iconSize: [18, 18], iconAnchor: [9, 9],
+    html: '<svg viewBox="0 0 18 18" width="18" height="18"><path d="M3 3L15 15M15 3L3 15"/></svg>' });
+  function flashMissed(ev) {
+    let p; try { p = JSON.parse(ev.data); } catch { return; }
+    if (!S.missed) return;
+    const m = L.marker([p.lat, p.lon], { icon: MISSED_ICON, pane: 'live', keyboard: false })
+      .bindTooltip(`${esc(stationName(p.mobile))} · beacon sent ${ago(p.ts)}, not heard`);
+    missedLayer.addLayer(m);
+    setTimeout(() => missedLayer.removeLayer(m), 30000);
   }
   async function checkStatus() {
     try {
@@ -755,6 +767,7 @@
     bind('borders', 'borders', { prop: 'checked', after: renderCells });
     bind('show-stations', 'stations', { prop: 'checked', after: renderStations });
     bind('show-live', 'live', { prop: 'checked', after: () => { if (!S.live) liveLayer.clearLayers(); } });
+    bind('show-missed', 'missed', { prop: 'checked', after: () => { if (!S.missed) missedLayer.clearLayers(); } });
     bind('show-me', 'me', { prop: 'checked', after: syncMe });
     bind('follow-me', 'follow', { prop: 'checked', after: syncMe });
     syncMe();
