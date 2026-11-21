@@ -71,7 +71,8 @@
           transmit log</label>
         <details class="hint more"><summary>How is this measured?</summary>
           <p class="muted">Exact counts come from trackers that upload their log through the LoRa FieldOps app.
-          For the rest, lost beacons are estimated from gaps between the packets heard while moving.</p></details>
+          For the rest, lost beacons are estimated from gaps between the packets heard. Each tracker's beaconing
+          (smart beaconing or a fixed rate) is worked out from its own packets; there is nothing to set.</p></details>
       </div>
       <label class="field inline" id="single-color-row">Coverage color
         <input type="color" id="single-color" value="#2f81f7">

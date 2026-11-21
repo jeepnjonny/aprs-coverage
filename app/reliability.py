@@ -6,35 +6,22 @@ Beacons come from two sources:
   * exact: a tracker's uploaded transmit log (devicelog.py). Every logged
     position beacon counts as sent at its position, and as heard if it was
     matched to a stored packet. Repeats APRS-IS drops as duplicates are left out.
-  * estimated: every other tracker, from gaps between the packets heard. A
-    mobile that moved between two heard packets further apart than its beacon
-    interval lost the beacons in between; they are placed evenly along the
-    straight line between the two fixes. A gap with no movement (parked, or
-    APRS-IS dropping identical repeats) says nothing and is skipped.
+  * estimated: every other tracker, from gaps between the packets heard. Each
+    tracker's beaconing (smart beaconing or a fixed rate) is fitted from its
+    own packets (beacons.py); a gap longer than that predicts at the speed
+    driven lost the beacons in between, placed evenly along the straight line
+    between the two fixes. Gaps while stopped count only for a tracker seen
+    beaconing steadily while stopped.
 
 With a station filter, "heard" means heard by one of the selected stations, so
 the map shows what those stations alone would cover.
 """
 import bisect
 
-from . import db, grid
-from .grid import approx_km
+from . import beacons, db, grid
 
 LOG_NEAR_S = 120          # a heard packet this close to a logged beacon is the log's business
 LOG_CATCHUP_S = 10        # ...once the log reaches past it (beacon sent a few seconds before it arrived)
-MAX_GAP_S = 3600          # longer silences are trips apart, not lost beacons
-INTERVAL_MAX_GAP_S = 900  # gaps used to estimate a beacon interval: longer is parked or off
-MIN_MOVE_KM = 0.1         # ends of a gap closer than this: parked, nothing to estimate
-MIN_SPEED_KMH = 3.0       # ...or moving slower than this on average (stopped part of the way)
-
-
-def beacon_interval(heard: list[dict]) -> int | None:
-    """Estimate the beacon interval from gaps between heard packets. Losses
-    make some gaps 2x, 3x the interval, so take the lower quartile."""
-    gaps = sorted(b["ts"] - a["ts"] for a, b in zip(heard, heard[1:]) if 5 <= b["ts"] - a["ts"] <= INTERVAL_MAX_GAP_S)
-    if len(gaps) < 5:
-        return None
-    return gaps[len(gaps) // 4]
 
 
 def reliability(c, start: int, end: int, cell_m: int, mobiles: list[str] | None,
@@ -52,7 +39,8 @@ def reliability(c, start: int, end: int, cell_m: int, mobiles: list[str] | None,
         args += mobiles
 
     heard: dict[str, list[dict]] = {}
-    for r in c.execute(f"SELECT mobile, txid, MIN(ts) AS ts, MAX(lat) AS lat, MAX(lon) AS lon FROM packets "
+    for r in c.execute(f"SELECT mobile, txid, MIN(ts) AS ts, MAX(lat) AS lat, MAX(lon) AS lon, "
+                       f"MAX(speed) AS speed, MAX(course) AS course FROM packets "
                        f"WHERE {q} GROUP BY txid ORDER BY ts", args):
         heard.setdefault(r["mobile"], []).append(dict(r))
     logs: dict[str, list[dict]] = {}
@@ -100,10 +88,10 @@ def reliability(c, start: int, end: int, cell_m: int, mobiles: list[str] | None,
             i = bisect.bisect_left(log_ts, h["ts"] - LOG_NEAR_S)
             return i < len(log_ts) and log_ts[i] <= h["ts"] + LOG_NEAR_S
 
-        interval = beacon_interval(hs) if estimates else None
-        per_mobile[m] = {"logged": len(log), "interval_s": interval}
-        if not estimates or (not interval and not log):
-            # No interval, no log: losses can't be estimated, and counting only
+        model = beacons.model_for(c, m, end, start) if estimates else None
+        per_mobile[m] = {"logged": len(log), "beacon": model.describe() if model else None}
+        if not estimates or (not model and not log):
+            # No model, no log: losses can't be estimated, and counting only
             # what was heard would read as 100%, so its packets are left out.
             continue
         flags = [logged(h) for h in hs]
@@ -111,18 +99,11 @@ def reliability(c, start: int, end: int, cell_m: int, mobiles: list[str] | None,
             if flags[i]:
                 continue
             add(h["lat"], h["lon"], h["ts"], ok(h["txid"]), False)
-            if not interval or i == 0 or flags[i - 1]:
+            if not model or i == 0 or flags[i - 1]:
                 continue
             p = hs[i - 1]
             gap = h["ts"] - p["ts"]
-            # gap 0: two packets stored the same second (a digi's late copy of an
-            # older beacon next to a fresh one); nothing to estimate between them
-            if gap <= 0 or gap > MAX_GAP_S:
-                continue
-            km = approx_km(p["lat"], p["lon"], h["lat"], h["lon"])
-            if km < MIN_MOVE_KM or km / (gap / 3600) < MIN_SPEED_KMH:
-                continue
-            missed = round(gap / interval) - 1
+            missed = model.missed(p, h)
             for k in range(1, missed + 1):
                 f = k / (missed + 1)
                 add(p["lat"] + f * (h["lat"] - p["lat"]), p["lon"] + f * (h["lon"] - p["lon"]),

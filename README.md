@@ -41,8 +41,9 @@ where the local igates and digipeaters can actually hear a mobile.
     beacons sent from it that reached APRS-IS, red (under 25%) through gray to blue (90%+).
     Red squares were driven but rarely heard; blank means nobody drove there. Exact where a
     tracker uploads its transmit log; for other trackers, lost beacons are estimated from gaps
-    between packets heard while moving (parked gaps are skipped) and placed along the line
-    between the two fixes. Squares with few beacons are drawn fainter. The igate/digi filter
+    between packets heard, using each tracker's beaconing (smart beaconing or a fixed rate)
+    worked out automatically from its own packets, and placed along the line between the two
+    fixes. Gaps while parked count only for trackers seen beaconing steadily while parked. Squares with few beacons are drawn fainter. The igate/digi filter
     applies: pick one station to see what it alone would cover. `GET /api/reliability`.
   - Shade squares by packet count. This mostly shows how much time was spent in a square, not
     signal quality; use the reliability view for that
@@ -302,9 +303,14 @@ only make mobile results exact.
 - A logged beacon identical to a packet APRS-IS passed less than 30 s before it is not counted
   either way: APRS-IS drops such repeats as duplicates however well they were heard. A parked
   tracker beaconing faster than every 30 s repeats itself, so most of its beacons are left out.
-- *Estimated* otherwise: from gaps between packets heard, at a beacon interval you give or one
-  estimated from the lower quartile of gaps. A gap over 15 minutes counts as parked, not lost.
-  Rough with smart beaconing; a fixed rate makes it reliable.
+- *Estimated* otherwise: from gaps between packets heard. Nothing to set: each tracker's
+  beaconing is fitted from its own packets (`app/beacons.py`). Smart beaconing is modelled as
+  fast rate, slow rate and distance between beacons in between, plus the share of extra beacons
+  on turns (corner pegging); a fixed rate is the case where fast and slow rates are equal. A gap
+  longer than the model predicts at the speed driven lost the beacons in between. Gaps while
+  stopped count only for a tracker seen beaconing steadily while stopped, and then at most four
+  in a row (more is switched off, not lost). In simulated drives with 10–70% loss the estimate
+  lands within about 1–2 points of the true share on average.
 - **Only when side by side** counts only packets sent while the two were within a set distance of
   each other (positions interpolated across gaps up to 5 minutes). Run both trackers in one
   vehicle with the same fixed rate, offset by half the interval so they don't collide, and this

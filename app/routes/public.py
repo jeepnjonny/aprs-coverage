@@ -304,12 +304,11 @@ def api_compare_mobiles(
     tz: int = Query(0, ge=-840, le=840, description="viewer's offset from UTC, minutes east"),
     together: bool = False,
     sep_m: float = Query(200, ge=20, le=5000),
-    interval: int | None = Query(None, ge=5, le=3600, description="beacon interval, s; omit to estimate"),
 ):
     a, b = _two(a, b)
     start, end = _compare_range(start, end)
     with db.session() as c:
-        return compare.compare_mobiles(c, a, b, start, end, bucket, tz * 60, together, sep_m, interval)
+        return compare.compare_mobiles(c, a, b, start, end, bucket, tz * 60, together, sep_m)
 
 
 @router.get("/api/compare/nodes")

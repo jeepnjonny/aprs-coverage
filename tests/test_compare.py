@@ -176,17 +176,13 @@ def test_compare_mobiles_exact_vs_estimated(client):
     d = r.json()
     a, b = d["a"]["total"], d["b"]["total"]
     assert (a["method"], a["sent"], a["heard"]) == ("exact", 10, 7)
-    assert b["method"] == "estimated" and d["b"]["interval_s"] == 60
+    assert b["method"] == "estimated" and d["b"]["beacon"]["stop_s"] == 60  # parked, beaconing steadily
     assert (b["sent"], b["heard"]) == (19, 15)  # the last loss is after the last packet heard
     assert a["direct_pct"] == 1.0
     echo = d["a"]["rx"]["echoes"][0]
     assert echo["via"] == "SQB" and echo["n"] == 2 and echo["rssi"] == -96 and echo["echo_rate"] == 0.2
     assert d["a"]["rx"]["beacons"][0]["via"] == "SQB"
     assert 0 <= d["p_value"] <= 1
-    # a fixed interval can be given instead of estimated
-    d = client.get("/api/compare/mobiles", params={"a": "K7ABC-9", "b": "K7ABC-7", "start": T - 10,
-                                                   "end": T + 3600, "interval": 30}).json()
-    assert d["b"]["total"]["sent"] == 15 + 10 * 1 + 4 * 3  # gaps of 60 s count one missed, 120 s three
     assert client.get("/api/compare/mobiles", params={"a": "K7ABC-9", "b": "K7ABC-9"}).status_code == 422
 
 
@@ -357,7 +353,7 @@ def test_reliability_estimates_gaps_along_the_road(client):
             ing.handle_line(f"K7ABC-7>APLRT1,WIDE1-1,qAR,KG7KMV-13:{_pos(43.6, -116.5 + i * 0.0124)}b{i}", now=T + i * 60)
     d = client.get("/api/reliability", params={"start": T - 10, "end": T + 3600, "cell": 1000}).json()
     assert (d["sent"], d["heard"], d["exact"]) == (12, 8, 0)
-    assert d["mobiles"]["K7ABC-7"]["interval_s"] == 60
+    assert d["mobiles"]["K7ABC-7"]["beacon"]["kind"] == "fixed" and d["mobiles"]["K7ABC-7"]["beacon"]["fast_s"] == 60
     from app import grid
     dlat, dlon = grid.cell_deg(1000)
     lost = {(x, y) for x, y, h, n, *_ in d["cells"] if h == 0}

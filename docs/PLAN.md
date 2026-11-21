@@ -189,7 +189,8 @@ firmware, with the directed-message protocol in its `src/remote_cfg_utils.cpp`:
 - Mobiles: share of transmissions that reached APRS-IS, per day/week/month, with Wilson 95%
   intervals and a two-proportion z-test on the totals. Exact where a transmit log was
   uploaded (log entries matched to packets by information field and time, closest pairs
-  first, one packet per entry), else estimated from gaps at a given or estimated interval.
+  first, one packet per entry), else estimated from gaps using each tracker's beaconing (smart or fixed), fitted from its
+  own packets (app/beacons.py).
   "Side by side" keeps only transmissions sent while the two were within a distance of each
   other, using every known fix (heard packets and logs) of the other mobile.
 - Igates/digis: over transmissions anyone heard, both / A only / B only / neither per bucket,
@@ -241,8 +242,8 @@ Later, maybe:
   can recover.
 - **Comparisons need time and fair conditions.** Mobiles that drove different places, or
   igates at different sites, differ for reasons other than the device. Use side-by-side
-  runs for mobiles and site swaps for igates. Gap estimates are rough with smart
-  beaconing. A packet heard but rejected by a quality check counts as lost.
+  runs for mobiles and site swaps for igates. Gap estimates follow each tracker's fitted
+  beaconing; they miss corner pegs only on average, so short trips can be a few points off. A packet heard but rejected by a quality check counts as lost.
 - **No backfill.** History starts when the ingester first runs.
 - **Untraced hops.** A packet that went through a digi that does not insert its
   callsign cannot be credited to that digi.

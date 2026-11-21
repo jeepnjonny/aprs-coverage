@@ -17,7 +17,7 @@
   const send = (method, url, body) => AC.request(method, url, body);
 
   // ── controls and URL state ─────────────────────────────────────────────────
-  const CTRL = ['mode', 'a', 'b', 'range', 'bucket', 'from', 'to', 'together', 'sep', 'interval', 'match',
+  const CTRL = ['mode', 'a', 'b', 'range', 'bucket', 'from', 'to', 'together', 'sep', 'match',
                 'station', 'change', 'change-at', 'period', 'same-route'];
   function readUrl() {
     const q = new URLSearchParams(location.search);
@@ -133,7 +133,6 @@
     const q = new URLSearchParams({ a, b, start, end, bucket: $('bucket').value, tz: TZ });
     if (mode === 'mobiles') {
       if ($('together').checked) { q.set('together', 'true'); q.set('sep_m', $('sep').value || 200); }
-      if ($('interval').value) q.set('interval', $('interval').value);
     } else q.set('match', $('match').value);
     const my = ++seq;
     status('Loading…');
@@ -193,6 +192,15 @@
     mixed: 'Exact where a transmit log was uploaded, estimated elsewhere',
   };
 
+  // The beaconing fitted for a tracker without a transmit log, in words.
+  function beaconText(b) {
+    if (!b || !b.kind) return '';
+    if (b.kind === 'fixed') return `beacons every ${b.fast_s} s`;
+    return `smart beaconing: every ${b.fast_s} s above ${b.fast_kmh} km/h, every ${b.spacing_km} km between `
+      + `${b.slow_kmh} and ${b.fast_kmh} km/h, every ${b.slow_s} s below`
+      + (b.peg_pct ? `, ${b.peg_pct}% extra on turns` : '');
+  }
+
   function tile(side, name, main, ci, lines) {
     return `<div class="tile-name"><span class="dot-${side}"></span> ${esc(name)}</div>
       <div class="tile-value">${main}</div>
@@ -214,15 +222,15 @@
         const t = s.total;
         $(`tile-${side}`).innerHTML = tile(side, s.mobile, pct(t.pct), pctRange(t.lo, t.hi), [
           t.sent ? `${num(t.heard)} of ${num(t.sent)} transmissions reached APRS-IS` : 'Not enough data',
-          `<span class="muted">${esc(METHOD[t.method] || 'No estimate: too few packets to work out the beacon interval')}`
-            + (t.method && t.method !== 'exact' && s.interval_s ? ` at ${s.interval_s} s` + (s.interval_given ? '' : ' (estimated)') : '') + '</span>',
+          `<span class="muted">${esc(METHOD[t.method] || 'No estimate: too few packets to work out how it beacons')}`
+            + (t.method && t.method !== 'exact' && s.beacon ? ` (worked out from its packets: ${esc(beaconText(s.beacon))})` : '') + '</span>',
           `<span class="muted">Direct to an igate ${pct(t.direct_pct)} · stations per packet ${t.stations ?? '—'}</span>`,
         ]);
       }
       verdict = verdictText(name.a, ta.pct, name.b, tb.pct, d.p_value, ta.sent && tb.sent,
         'got', 'of its transmissions through');
       if (!d.together) notes.push('These two may have been in different places. For a fair test of the devices, tick <b>Only when side by side</b> and run both in one vehicle.');
-      if (ta.method !== 'exact' || tb.method !== 'exact') notes.push('Estimates assume a steady beacon rate. Smart beaconing makes them rough; a fixed rate, or a transmit log uploaded from the app, makes them exact.');
+      if (ta.method !== 'exact' || tb.method !== 'exact') notes.push('Estimates follow each tracker’s beaconing, worked out from its own packets, smart beaconing included. They are usually within a few points; a transmit log uploaded from the app makes them exact.');
       if (d.together && !(ta.sent && tb.sent)) notes.push(`No packets found with both within ${d.sep_m} m of each other.`);
       series = [
         { side: 'a', name: name.a, pts: d.a.buckets.map(r => ({ t: r.t, v: r.pct, lo: r.lo, hi: r.hi, k: r.heard, n: r.sent })) },
@@ -596,7 +604,7 @@
 
   (async () => {
     readUrl();
-    for (const k of ['mode', 'range', 'bucket', 'match', 'from', 'to', 'sep', 'interval', 'period', 'change-at']) applyWant($(k));
+    for (const k of ['mode', 'range', 'bucket', 'match', 'from', 'to', 'sep', 'period', 'change-at']) applyWant($(k));
     range();
     try {
       [STATIONS, MOBILES] = await Promise.all([get('api/stations'), get('api/mobiles')]);

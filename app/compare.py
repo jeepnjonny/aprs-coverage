@@ -3,7 +3,7 @@ period, bucketed by day, week or month so trends show rather than single days.
 
 Mobiles: what share of transmissions reached APRS-IS. Exact where the mobile's
 own transmit log was uploaded (see devicelog.py), otherwise estimated from gaps
-in what was heard, at a known or estimated beacon interval.
+in what was heard, at the beaconing fitted for that tracker (beacons.py).
 
 Igates/digis: of the transmissions from registered mobiles that anyone heard,
 which ones each station heard. Only fair with the aprsc duplicates feed, which
@@ -14,12 +14,11 @@ import math
 import time
 from datetime import datetime, timezone
 
-from . import db, grid
+from . import beacons, db, grid
 from .grid import approx_km
-from .reliability import beacon_interval, reliability
+from .reliability import reliability
 
 BUCKETS = ("day", "week", "month")
-MAX_GAP_S = 900          # a longer silence is parked or switched off, not lost packets
 POS_GAP_S = 300          # a position is interpolated between fixes at most this far apart
 ECHO_WINDOW_S = 60       # a digi echo is heard this soon after the transmission
 DIST_BANDS_KM = (0, 2, 5, 10, 20, 40)
@@ -120,7 +119,8 @@ def _heard(c, mobile, start, end) -> list[dict]:
     """Transmissions heard, one row each: first receive time, position,
     whether any igate heard it directly, how many stations heard it."""
     return [dict(r) for r in c.execute(
-        "SELECT txid, MIN(ts) AS ts, MAX(lat) AS lat, MAX(lon) AS lon, MIN(hops) AS hops, "
+        "SELECT txid, MIN(ts) AS ts, MAX(lat) AS lat, MAX(lon) AS lon, MAX(speed) AS speed, "
+        "MAX(course) AS course, MIN(hops) AS hops, "
         "COUNT(DISTINCT COALESCE(heard_by, '')) AS stations FROM packets "
         "WHERE mobile=? AND ts BETWEEN ? AND ? GROUP BY txid ORDER BY ts", (mobile, start, end))]
 
@@ -167,12 +167,12 @@ def _rx_summary(c, mobile, start, end, log: list[dict]) -> dict:
 
 
 def mobile_series(c, mobile: str, start: int, end: int, bucket: str, tz_s: int,
-                  interval: int | None = None, keep=None) -> dict:
+                  keep=None) -> dict:
     """Per-bucket share of transmissions heard for one mobile. keep(ts, lat,
     lon) limits which transmissions count (e.g. only when beside the other)."""
     heard = _heard(c, mobile, start, end)
     log = _txlog(c, mobile, start, end)
-    est_interval = interval or beacon_interval(heard)
+    model = beacons.model_for(c, mobile, end, start)
     # With a filter, gaps are still measured on everything heard (a packet
     # filtered out was heard, not lost), and count only when both ends pass.
     kept = [not keep or keep(h["ts"], h["lat"], h["lon"]) for h in heard]
@@ -198,13 +198,11 @@ def mobile_series(c, mobile: str, start: int, end: int, bucket: str, tz_s: int,
         x["direct"] += h["hops"] == 0
         x["stations"] += h["stations"]
         if x["method"] != "exact":
-            x["method"] = "estimated" if est_interval else None
+            x["method"] = "estimated" if model else None
             x["heard"] += 1
             x["sent"] += 1
-            if i and kept[i - 1] and est_interval:
-                gap = h["ts"] - heard[i - 1]["ts"]
-                if gap <= MAX_GAP_S:
-                    x["sent"] += max(0, round(gap / est_interval) - 1)
+            if i and kept[i - 1] and model:
+                x["sent"] += model.missed(heard[i - 1], h)
     rows = []
     for x in sorted(b.values(), key=lambda r: r["t"]):
         if x["method"] is None:
@@ -220,7 +218,7 @@ def mobile_series(c, mobile: str, start: int, end: int, bucket: str, tz_s: int,
     methods = {r["method"] for r in rows if r["method"]}
     pk = sum(r["packets"] for r in rows)
     return {
-        "mobile": mobile, "buckets": rows, "interval_s": est_interval, "interval_given": bool(interval),
+        "mobile": mobile, "buckets": rows, "beacon": model.describe() if model else None,
         "total": {
             "sent": sent, "heard": got, **share(got, sent), "packets": pk,
             "method": "mixed" if len(methods) > 1 else (methods.pop() if methods else None),
@@ -233,7 +231,7 @@ def mobile_series(c, mobile: str, start: int, end: int, bucket: str, tz_s: int,
 
 
 def compare_mobiles(c, a: str, b: str, start: int, end: int, bucket: str = "week", tz_s: int = 0,
-                    together: bool = False, sep_m: float = 200, interval: int | None = None) -> dict:
+                    together: bool = False, sep_m: float = 200) -> dict:
     keep = {a: None, b: None}
     if together:
         tracks = {}
@@ -248,8 +246,8 @@ def compare_mobiles(c, a: str, b: str, start: int, end: int, bucket: str = "week
                 return p is not None and approx_km(lat, lon, p[0], p[1]) * 1000 <= sep_m
             return f
         keep = {a: near(b), b: near(a)}
-    sa = mobile_series(c, a, start, end, bucket, tz_s, interval, keep[a])
-    sb = mobile_series(c, b, start, end, bucket, tz_s, interval, keep[b])
+    sa = mobile_series(c, a, start, end, bucket, tz_s, keep[a])
+    sb = mobile_series(c, b, start, end, bucket, tz_s, keep[b])
     ta, tb = sa["total"], sb["total"]
     return {
         "kind": "mobiles", "a": sa, "b": sb, "start": start, "end": end, "bucket": bucket,
