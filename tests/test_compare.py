@@ -481,3 +481,89 @@ def test_change_node(client):
     assert (d["before"]["heard"], d["before"]["sent"]) == (20, 60)
     assert (d["after"]["heard"], d["after"]["sent"]) == (40, 60)
     assert [e["text"] for e in d["events"]] == ["new antenna"]
+
+
+# ── log files copied off a tracker's SD card ────────────────────────────────
+def iso(ts):
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_parse_log_file():
+    from app.devicelog import UploadError, parse_log_file, parse_time
+    assert parse_time("1763251200") == parse_time("2025-11-16T00:00:00Z") == 1763251200
+    assert parse_time("2025-11-16 00:00:00") == parse_time("2025-11-15T17:00:00-07:00") == 1763251200
+    assert parse_time("yesterday") is None
+    text = ("﻿# LoRanger V2 log\n"
+            "UTC,Type,RSSI,SNR,Packet\n"
+            f"{iso(T)},TX,,,K7ABC-9>APLRT1,WIDE1-1:{POS}a, b\n"            # unquoted commas kept
+            f'{T + 60},rx,-97,6.5,"K7ABC-9>APLRT1,SQB*,WIDE1*:{POS}a, b"\n'
+            f"{T + 70},DIGI,,,K7XYZ>APRS,K7ABC-9*:>hi\n"                   # not tx/rx: skipped
+            "\n"
+            f"soon,tx,,,K7ABC-9>APLRT1:{POS}\n")
+    entries, errors, skipped = parse_log_file(text)
+    assert [(e["type"], e["ts"], e["line"]) for e in entries] == [("tx", T, 3), ("rx", T + 60, 4)]
+    assert entries[0]["packet"] == entries[1]["packet"].replace("SQB*,WIDE1*", "WIDE1-1") == \
+        f"K7ABC-9>APLRT1,WIDE1-1:{POS}a, b"
+    assert entries[1]["rssi"] == "-97" and "rssi" not in entries[0]
+    assert skipped == 1 and errors == [{"line": 7, "error": "can't read the time 'soon'"}]
+    # no type column: every row is a transmission
+    entries, _, _ = parse_log_file(f"timestamp,raw\n{T},{tx_line(1)}\n")
+    assert entries[0]["type"] == "tx" and entries[0]["packet"] == tx_line(1)
+    for bad in ("", "# only a comment\n", f"{T},{tx_line(1)}\n", "when,what\n"):
+        try:
+            parse_log_file(bad)
+            raise AssertionError(bad)
+        except UploadError as e:
+            assert e.status == 422
+
+
+def test_log_file_upload(client):
+    register(client)
+    ing = client.ingester
+    assert ing.handle_line(is_line(1), now=T + 3) == "accept"   # beacon 1 heard, 2 lost
+    csv_text = "utc,type,packet\n" + "".join(f"{iso(T + i * 60)},tx,{tx_line(i + 1)}\n" for i in range(2))
+    body = {"device": "k7abc-9", "name": "TX0001.CSV", "text": csv_text}
+    assert client.post("/api/account/devicelog-file", json=body).status_code == 403   # no X-Requested-With
+    r = client.post("/api/account/devicelog-file", json=body, headers=H).json()
+    assert (r["rows"], r["accepted"], r["tx"], r["heard"], r["first"], r["last"]) == (2, 2, 2, 1, T, T + 60)
+    r = client.post("/api/account/devicelog-file", json=body, headers=H).json()
+    assert (r["accepted"], r["duplicates"], r["rejected"]) == (0, 2, 0)                # repeat is harmless
+    with db.session() as c:
+        assert [x[0] is not None for x in c.execute("SELECT txid FROM device_log ORDER BY ts")] == [True, False]
+    # the reliability view counts them as exact
+    rel = client.get("/api/reliability", params={"start": T - 600, "end": T + 600, "cell": 500}).json()
+    assert rel["exact"] == 2 and rel["sent"] == 2 and rel["heard"] == 1
+
+    # errors carry file line numbers; an entry upload() refuses counts as rejected
+    bad = f"utc,packet\n{T},{tx_line(1, 'K7XXX-9')}\nnope,{tx_line(2)}\n"
+    r = client.post("/api/account/devicelog-file", json={"device": "K7ABC-9", "text": bad}, headers=H).json()
+    assert r["rejected"] == 2 and [e["line"] for e in r["errors"]] == [2, 3]
+    assert "not K7ABC-9" in r["errors"][0]["error"]
+
+    # big files go in batches of MAX_ENTRIES, in time order
+    rows = [f"{T + 3600 + i * 5},{tx_line(i, 'K7ABC-7')}" for i in range(devicelog.MAX_ENTRIES + 5)][::-1]
+    r = client.post("/api/account/devicelog-file", headers=H,
+                    json={"device": "K7ABC-7", "text": "ts,packet\n" + "\n".join(rows)}).json()
+    assert r["accepted"] == devicelog.MAX_ENTRIES + 5 and r["first"] == T + 3600
+
+    for dev, status in (("KG7KMV-13", 422), ("N0PE-9", 404), ("", 422)):
+        assert client.post("/api/account/devicelog-file", headers=H,
+                           json={"device": dev, "text": csv_text}).status_code == status
+    assert client.post("/api/account/devicelog-file", headers=H,
+                       json={"device": "K7ABC-9", "text": "x" * (devicelog.MAX_FILE_BYTES + 1)}).status_code == 413
+    assert client.get("/api/account/log-devices").json() == ["K7ABC-7", "K7ABC-9"]
+
+
+def test_log_file_owner_only(client):
+    register(client)
+    alice = other(client)
+    signup(alice, devices=[{"callsign": "K7ALC-*", "kind": "mobile"}])
+    assert alice.get("/api/account/log-devices").status_code == 403                    # pending
+    approve(client, "alice", "K7ALC-*")
+    assert alice.get("/api/account/log-devices").json() == ["K7ALC-*"]
+    text = f"utc,packet\n{T},{tx_line(1, 'K7ALC-9')}\n"
+    assert alice.post("/api/account/devicelog-file", headers=H,
+                      json={"device": "K7ABC-9", "text": text}).status_code == 404
+    r = alice.post("/api/account/devicelog-file", headers=H, json={"device": "K7ALC-9", "text": text})
+    assert r.status_code == 200 and r.json()["accepted"] == 1

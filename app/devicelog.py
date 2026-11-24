@@ -6,10 +6,13 @@ A mobile's own log says what it transmitted. Matching each logged transmission
 to a stored packet turns "how much got through" from an estimate into a count.
 Its log of what it heard adds digis repeating its packets, with signal strength.
 """
+import csv
 import hashlib
+import io
 import secrets
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import aprslib
 
@@ -237,6 +240,129 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
                                  f"({db.placeholders(chunk)})", chunk).fetchone()[0]
                        for chunk in (tx_ids[i:i + 500] for i in range(0, len(tx_ids), 500)))
     res["errors"] = res["errors"][:20]
+    return res
+
+
+# ── log files copied off a tracker's SD card ────────────────────────────────
+# Uploaded on the account page by the device's owner (an admin for any device),
+# a file at a time. Each row becomes a tx/rx entry for upload(), so matching,
+# reliability and comparisons treat it exactly like an app's live upload.
+#
+# The LoRanger V2's SD log format isn't published yet, so the parser reads the
+# header row and accepts the usual names for each column. Adjust FILE_COLUMNS
+# (and parse_time) once the firmware's format is settled.
+MAX_FILE_BYTES = 8 * 1024 * 1024
+MAX_FILE_ROWS = 100_000
+FILE_COLUMNS = {
+    "time": ("utc", "time", "timestamp", "ts", "datetime", "date_time", "unix", "epoch", "gps_time"),
+    "type": ("type", "dir", "direction", "kind", "event"),
+    "packet": ("packet", "raw", "tnc2", "frame", "aprs", "line", "data"),
+    "rssi": ("rssi",),
+    "snr": ("snr",),
+}
+FILE_TYPES = {"tx": "tx", "t": "tx", "sent": "tx", "send": "tx", "beacon": "tx",
+              "rx": "rx", "r": "rx", "recv": "rx", "received": "rx", "heard": "rx"}
+
+
+def parse_time(v: str) -> int | None:
+    """Unix seconds, or ISO 8601 / 'YYYY-MM-DD HH:MM:SS' (UTC unless it carries
+    an offset). None if it's neither."""
+    v = v.strip()
+    if not v:
+        return None
+    try:
+        return int(float(v))
+    except ValueError:
+        pass
+    try:
+        t = datetime.fromisoformat(v[:-1] + "+00:00" if v[-1:] in "Zz" else v)
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return int(t.timestamp())
+
+
+def parse_log_file(text: str) -> tuple[list[dict], list[dict], int]:
+    """(entries, errors, skipped) from a CSV transmit log. Each entry carries
+    the file `line` it came from. The first non-blank, non-'#' row is the
+    header and needs a time column and a packet column; with no type column
+    every row is a transmission. Rows of other types (digipeats, notes) are
+    skipped. The packet is the last column, so commas in an unquoted packet
+    are kept. Raises UploadError if the file can't be read at all."""
+    text = text.lstrip("\ufeff")
+    rows = csv.reader(io.StringIO(text, newline=""))
+    cols: dict[str, int] | None = None
+    entries, errors, skipped = [], [], 0
+    for row in rows:
+        line = rows.line_num
+        if not row or not "".join(row).strip() or row[0].lstrip().startswith("#"):
+            continue
+        if cols is None:
+            names = [h.strip().lower().replace(" ", "_") for h in row]
+            cols = {}
+            for col, aliases in FILE_COLUMNS.items():
+                for i, n in enumerate(names):
+                    if n in aliases:
+                        cols[col] = i
+                        break
+            if "time" not in cols or "packet" not in cols:
+                raise UploadError(422, "The first row must name the columns, with a time column (utc, time, "
+                                       "timestamp or ts) and a packet column (packet or raw). Got: "
+                                       + ", ".join(row)[:200])
+            continue
+        if len(entries) >= MAX_FILE_ROWS:
+            raise UploadError(413, f"At most {MAX_FILE_ROWS:,} rows per file")
+        pi = cols["packet"]
+        if len(row) <= pi:
+            errors.append({"line": line, "error": "too few columns"})
+            continue
+        # An unquoted packet with commas in its path or comment spills into
+        # extra columns; when the packet is the last column, put it back together.
+        packet = ",".join(row[pi:]) if pi == max(cols.values()) else row[pi]
+        t = "tx"
+        if "type" in cols:
+            t = FILE_TYPES.get(row[cols["type"]].strip().lower(), "")
+            if not t:
+                skipped += 1
+                continue
+        ts = parse_time(row[cols["time"]])
+        if ts is None:
+            errors.append({"line": line, "error": f"can't read the time {row[cols['time']][:40]!r}"})
+            continue
+        e = {"type": t, "ts": ts, "packet": packet, "line": line}
+        for k in ("rssi", "snr"):
+            if k in cols and cols[k] < len(row) and cols[k] != pi and row[cols[k]].strip():
+                e[k] = row[cols[k]].strip()
+        entries.append(e)
+    if cols is None:
+        raise UploadError(422, "The file is empty")
+    return entries, errors, skipped
+
+
+def upload_file(c, user: dict, device: str, text: str, now: int | None = None) -> dict:
+    """Store a whole log file for one mobile, in batches of MAX_ENTRIES in
+    time order (each batch is matched as it goes in). Like upload(), safe to
+    repeat: rows already stored count as duplicates."""
+    device = device.strip().upper()
+    if not device:
+        raise UploadError(422, "device is required")
+    if device_kind(c, user, device) != "mobile":
+        raise UploadError(422, f"{device} is an igate/digi; log files are for mobiles")
+    entries, errors, skipped = parse_log_file(text)
+    entries.sort(key=lambda e: e["ts"])
+    res = {"rows": len(entries) + len(errors) + skipped, "accepted": 0, "duplicates": 0, "ignored": 0,
+           "skipped": skipped, "rejected": len(errors), "tx": 0, "heard": 0, "first": None, "last": None}
+    for i in range(0, len(entries), MAX_ENTRIES):
+        batch = entries[i:i + MAX_ENTRIES]
+        r = upload(c, user, device, batch, now)
+        for k in ("accepted", "duplicates", "ignored", "tx", "heard"):
+            res[k] += r[k]
+        res["rejected"] += len(batch) - r["accepted"] - r["duplicates"] - r["ignored"]
+        errors += [{"line": batch[e["index"]]["line"], "error": e["error"]} for e in r["errors"]]
+    if entries:
+        res["first"], res["last"] = entries[0]["ts"], entries[-1]["ts"]
+    res["errors"] = sorted(errors, key=lambda e: e["line"])[:20]
     return res
 
 

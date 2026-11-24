@@ -92,6 +92,49 @@ def upload_device_log(body: DeviceLogIn, request: Request):
     return res
 
 
+@router.get("/api/account/log-devices")
+def log_devices(user: dict = Depends(auth.require_active)):
+    """Approved mobiles this user can upload a log file for (all of them for
+    an admin). A pattern registration (K7ABC-*) is listed as is; the upload
+    names the concrete callsign."""
+    admin = user["role"] == "admin"
+    with db.session() as c:
+        return [r[0] for r in c.execute(
+            "SELECT callsign FROM stations WHERE kind='mobile' AND status='approved' "
+            f"{'' if admin else 'AND owner_id=?'} ORDER BY callsign", () if admin else (user["id"],))]
+
+
+class LogFileIn(BaseModel):
+    device: str
+    name: str = ""
+    text: str
+
+
+@router.post("/api/account/devicelog-file")
+def upload_log_file(body: LogFileIn, user: dict = Depends(auth.require_active)):
+    """A transmit log copied off a tracker's SD card (CSV), uploaded from the
+    account page. Stored like an app's upload; see devicelog.parse_log_file."""
+    device = body.device.strip().upper()
+    tag = f"{user['username']} {device}"
+    fname = body.name.strip()[:80]
+    if len(body.text.encode()) > devicelog.MAX_FILE_BYTES:
+        raise HTTPException(413, f"At most {devicelog.MAX_FILE_BYTES // 2**20} MB per file")
+    with db.session() as c:
+        try:
+            res = devicelog.upload_file(c, user, device, body.text)
+        except devicelog.UploadError as e:
+            logbuf.DEVICES.add("refused", tag, f"log file {fname or '(unnamed)'}: {e}", "file")
+            raise HTTPException(e.status, str(e))
+    text = (f"log file {fname or '(unnamed)'}: {res['rows']} rows, {res['accepted']} new, "
+            f"{res['duplicates']} already stored, {res['ignored']} ignored, {res['skipped']} skipped, "
+            f"{res['rejected']} with errors")
+    if res["tx"]:
+        text += f"; {res['heard']} of {res['tx']} new transmissions heard on APRS-IS"
+    errs = "; ".join(f"line {e['line']}: {e['error']}" for e in res["errors"][:3])
+    logbuf.DEVICES.add("upload", tag, text, " | ".join(x for x in ("file", errs) if x))
+    return res
+
+
 # ── accounts: login, sign-up, your own account and devices ───────────────────
 _PREFIX_OK = re.compile(r"^(/[A-Za-z0-9._~-]+)+/?$")
 

@@ -195,8 +195,9 @@ firmware, with the directed-message protocol in its `src/remote_cfg_utils.cpp`:
   other, using every known fix (heard packets and logs) of the other mobile.
 - Igates/digis: over transmissions anyone heard, both / A only / B only / neither per bucket,
   McNemar test on the discordant pairs, hear rate by distance band from each station.
-- Device logs come from an app (API key, `POST /api/devicelog`); the site works the same
-  without them. Igates and digis don't upload; their side is APRS-IS data only.
+- Device logs come from an app (API key, `POST /api/devicelog`) or a CSV file copied off a
+  tracker's SD card (account page, `POST /api/account/devicelog-file`, which parses the file and
+  feeds the same `devicelog.upload()` in batches); the site works the same without them. Igates and digis don't upload; their side is APRS-IS data only.
 
 ## Reliability view (`app/reliability.py`)
 

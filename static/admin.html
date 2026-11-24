@@ -387,6 +387,21 @@
         <code id="key-value"></code> <button type="button" class="btn secondary" id="key-copy">Copy</button>
       </div>
     </section>
+    <section class="card" id="logfile-card" hidden>
+      <h2>Upload a tracker's log file</h2>
+      <p class="muted small">A transmit log copied off a tracker's SD card (CSV, for example from a LoRanger V2).
+        Each beacon it sent is matched to the packets that reached APRS-IS, so the
+        <a href="./">reliability map</a> and <a href="compare">comparisons</a> count that tracker's lost beacons
+        exactly instead of estimating them. Uploading the same file again is harmless.</p>
+      <form id="logfile-form" class="inline-form">
+        <input type="text" id="logfile-device" list="logfile-devices" required autocapitalize="characters"
+          spellcheck="false" maxlength="20" placeholder="Mobile, e.g. K7ABC-9">
+        <datalist id="logfile-devices"></datalist>
+        <input type="file" id="logfile-file" accept=".csv,.txt,.log,text/csv,text/plain" required>
+        <button class="btn" id="logfile-send">Upload</button> <span id="logfile-msg" aria-live="polite"></span>
+      </form>
+      <div id="logfile-result" class="small" hidden></div>
+    </section>
     <section class="card" id="withdraw-card" hidden>
       <h2>Withdraw sign-up</h2>
       <p class="muted small">Deletes your account and the devices you submitted.</p>

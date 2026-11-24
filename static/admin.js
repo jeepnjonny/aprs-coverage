@@ -553,9 +553,16 @@
         <td>${esc(s.label)}${s.notes ? `<br><span class="muted small">${esc(s.notes)}</span>` : ''}</td>
         <td>${myStatus(s)}</td>
         <td>${s.kind === 'mobile' || s.status !== 'approved' ? '<span class="muted">—</span>' : `${fmt(s.last_beacon)}${s.gated ?`<br><span class="muted small">gated ${s.gated.main + s.gated.dupe} in 7 days</span>` : ''}`}</td>
-        <td class="actions"><button class="btn secondary" data-myedit="${s.id}">Edit</button><button class="btn danger" data-mydel="${s.id}">Delete</button></td>
+        <td class="actions">${s.kind === 'mobile' && s.status === 'approved' ? `<button class="btn secondary" data-mylog="${esc(s.callsign)}" title="Upload a log file copied off this tracker's SD card">Upload log</button>` : ''}<button class="btn secondary" data-myedit="${s.id}">Edit</button><button class="btn danger" data-mydel="${s.id}">Delete</button></td>
       </tr>`).join('') || '<tr><td colspan="7" class="muted">No devices yet. Add one below.</td></tr>';
     document.querySelectorAll('[data-myedit]').forEach(b => b.addEventListener('click', () => editMine(+b.dataset.myedit)));
+    document.querySelectorAll('[data-mylog]').forEach(b => b.addEventListener('click', () => {
+      showTab('account');
+      // A pattern registration (K7ABC-*) uploads as the callsign it matches: leave the SSID to fill in.
+      $('logfile-device').value = b.dataset.mylog.replace(/\*$/, '');
+      $('logfile-card').scrollIntoView({ behavior: 'smooth' });
+      $(b.dataset.mylog.endsWith('*') ? 'logfile-device' : 'logfile-file').focus({ preventScroll: true });
+    }));
     document.querySelectorAll('[data-mydel]').forEach(b => b.addEventListener('click', async () => {
       if (!armed(b)) return;
       try {
@@ -611,8 +618,47 @@
     $('a-username').value = ME.username; $('a-callsign').value = ME.callsign;
     $('a-name').value = ME.name; $('a-email').value = ME.email;
     $('keys-card').hidden = ME.status !== 'active';
+    $('logfile-card').hidden = ME.status !== 'active';
     if (ME.status === 'active') loadKeys().catch(err => say('key-msg', err.message, true));
+    if (ME.status === 'active') loadLogDevices().catch(err => say('logfile-msg', err.message, true));
   }
+
+  // ── log files copied off a tracker's SD card ──────────────────────────────
+  const LOGFILE_MAX = 8 * 1024 * 1024;  // devicelog.MAX_FILE_BYTES
+  async function loadLogDevices() {
+    const calls = await api('GET', 'api/account/log-devices');
+    $('logfile-devices').innerHTML = calls.map(c => `<option value="${esc(c)}">`).join('');
+    if (!$('logfile-device').value && calls.length === 1 && !calls[0].endsWith('*')) $('logfile-device').value = calls[0];
+  }
+  $('logfile-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const file = $('logfile-file').files[0];
+    const device = $('logfile-device').value.trim().toUpperCase();
+    $('logfile-result').hidden = true;
+    if (!file) return;
+    if (device.includes('*')) { say('logfile-msg', 'Use the callsign the tracker sends as, e.g. K7ABC-9 for K7ABC-*.', true); return; }
+    if (file.size > LOGFILE_MAX) { say('logfile-msg', `That file is ${(file.size / 2 ** 20).toFixed(1)} MB; the limit is 8 MB. Split it and upload the parts.`, true); return; }
+    $('logfile-send').disabled = true;
+    say('logfile-msg', 'Uploading and matching…');
+    try {
+      const r = await api('POST', 'api/account/devicelog-file', { device, name: file.name, text: await file.text() });
+      say('logfile-msg', '');
+      const n = v => v.toLocaleString();
+      const parts = [`${n(r.rows)} rows`, `${n(r.accepted)} new`];
+      if (r.duplicates) parts.push(`${n(r.duplicates)} already stored`);
+      if (r.ignored) parts.push(`${n(r.ignored)} ignored (other stations' traffic)`);
+      if (r.skipped) parts.push(`${n(r.skipped)} skipped (not tx/rx)`);
+      if (r.rejected) parts.push(`<span class="error">${n(r.rejected)} with errors</span>`);
+      let html = `<p><b>${esc(device)}</b>, ${r.first ? `${fmt(r.first)} to ${fmt(r.last)}` : 'no dated rows'}: ${parts.join(', ')}.</p>`;
+      if (r.tx) html += `<p>${n(r.heard)} of ${n(r.tx)} new position beacons reached APRS-IS (${Math.round(100 * r.heard / r.tx)}%).</p>`;
+      if (r.errors.length) html += `<ul class="muted">${r.errors.map(x => `<li>Line ${x.line}: ${esc(x.error)}</li>`).join('')}</ul>`
+        + (r.rejected > r.errors.length ? `<p class="muted">First ${r.errors.length} errors shown.</p>` : '');
+      $('logfile-result').innerHTML = html;
+      $('logfile-result').hidden = false;
+      $('logfile-file').value = '';
+    } catch (err) { say('logfile-msg', err.message, true); }
+    finally { $('logfile-send').disabled = false; }
+  });
   async function loadKeys() {
     const keys = await api('GET', 'api/account/keys');
     $('keys-body').innerHTML = keys.length ? keys.map(k => `<tr>

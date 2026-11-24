@@ -64,8 +64,8 @@ where the local igates and digipeaters can actually hear a mobile.
   distance for igates/digis, and dated device notes (antenna swap, move) drawn on the chart. See
   [Comparisons](#comparisons).
 - **Device log uploads** (optional). An app connected to a tracker can upload what it sent and heard
-  with an API key from the account page, which makes mobile comparisons exact instead of
-  estimated. Nothing else depends on it. See [Device log uploads](#device-log-uploads).
+  with an API key from the account page, or the tracker's owner can upload a log file copied off its
+  SD card, which makes mobile comparisons exact instead of estimated. Nothing else depends on it. See [Device log uploads](#device-log-uploads).
 - **Accounts** (`/aprs-coverage/admin`, linked from the map as *Join / Log in*). Anyone who runs
   an igate, digi or tracker can sign up with their callsign and the devices they run. The account
   and its devices stay pending, off the map and out of the APRS-IS filter, until an admin approves
@@ -379,6 +379,28 @@ Content-Type: application/json
   line, whether each transmission was heard, and signal strength).
 
 Logs uploaded before APRS-IS delivers the packets are matched again every 5 minutes for 2 days.
+
+#### Log files from a tracker's SD card
+
+A tracker that keeps its own transmit log on an SD card (LoRanger V2) doesn't need an app or a key:
+its owner (or an admin) uploads the file on the account page (*Account* tab, *Upload a tracker's log
+file*, or *Upload log* next to a mobile on *My devices*). The rows are stored and matched exactly like
+an app's `tx`/`rx` entries, so re-uploading the same card is harmless.
+
+- CSV, up to 8 MB and 100,000 rows. The first row names the columns; it needs a time column
+  (`utc`, `time`, `timestamp` or `ts`) and a packet column (`packet` or `raw`). Optional: `type`
+  (`tx`/`rx`, or `T`/`R`; other types are skipped; without it every row is a transmission),
+  `rssi`, `snr`. Lines starting with `#` are ignored.
+- Time: unix seconds or ISO 8601 (`2026-11-20T18:04:11Z`); a time without an offset is UTC. It must
+  be real clock time (from GPS), not time since boot.
+- Packet: the TNC2 line exactly as transmitted. If it is the last column it may contain unquoted
+  commas.
+- The reply gives rows read, new, already stored, skipped, errors (with file line numbers), and how
+  many of the new position beacons reached APRS-IS. `POST /api/account/devicelog-file` with
+  `{"device", "name", "text"}` (logged-in session).
+
+The LoRanger V2 firmware's log format isn't published yet; the accepted column names are in
+`devicelog.FILE_COLUMNS` and will follow it.
 
 ### Configuration
 
