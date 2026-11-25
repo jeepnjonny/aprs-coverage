@@ -399,8 +399,12 @@ an app's `tx`/`rx` entries, so re-uploading the same card is harmless.
   many of the new position beacons reached APRS-IS. `POST /api/account/devicelog-file` with
   `{"device", "name", "text"}` (logged-in session).
 
-The LoRanger V2 firmware's log format isn't published yet; the accepted column names are in
-`devicelog.FILE_COLUMNS` and will follow it.
+The LoRanger V2 writes `/log/<session>/tx.csv` (`utc,millis,packet`) and `rx.csv`
+(`utc,millis,rssi,snr,packet`) per power-on; both work as they are. Rows written before GPS had a fix
+(empty `utc`) are skipped, transmissions it relayed for other stations are ignored, and a file with
+signal-strength columns is read as what it heard. Its other channels (power, events, battery, gps,
+accel) have no packets and are refused. Accepted column names are in
+`devicelog.FILE_COLUMNS`.
 
 ### Configuration
 

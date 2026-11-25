@@ -116,7 +116,7 @@ def upload_log_file(body: LogFileIn, user: dict = Depends(auth.require_active)):
     account page. Stored like an app's upload; see devicelog.parse_log_file."""
     device = body.device.strip().upper()
     tag = f"{user['username']} {device}"
-    fname = body.name.strip()[:80]
+    fname = body.name.strip()[-80:]  # the end of a path (session/tx.csv) is the useful part
     if len(body.text.encode()) > devicelog.MAX_FILE_BYTES:
         raise HTTPException(413, f"At most {devicelog.MAX_FILE_BYTES // 2**20} MB per file")
     with db.session() as c:
@@ -126,7 +126,7 @@ def upload_log_file(body: LogFileIn, user: dict = Depends(auth.require_active)):
             logbuf.DEVICES.add("refused", tag, f"log file {fname or '(unnamed)'}: {e}", "file")
             raise HTTPException(e.status, str(e))
     text = (f"log file {fname or '(unnamed)'}: {res['rows']} rows, {res['accepted']} new, "
-            f"{res['duplicates']} already stored, {res['ignored']} ignored, {res['skipped']} skipped, "
+            f"{res['duplicates']} already stored, {res['ignored']} ignored, {res['skipped'] + res['untimed']} skipped, "
             f"{res['rejected']} with errors")
     if res["tx"]:
         text += f"; {res['heard']} of {res['tx']} new transmissions heard on APRS-IS"

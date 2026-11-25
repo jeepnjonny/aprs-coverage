@@ -630,32 +630,65 @@
     $('logfile-devices').innerHTML = calls.map(c => `<option value="${esc(c)}">`).join('');
     if (!$('logfile-device').value && calls.length === 1 && !calls[0].endsWith('*')) $('logfile-device').value = calls[0];
   }
+  // Files to send: picked one by one, or from a whole log folder (every
+  // session's tx.csv and rx.csv; the card's other channels have no packets).
+  let logFiles = [];
+  const LOG_NAMES = /^(tx|rx)\.csv$/i;
+  const pathOf = f => f.webkitRelativePath || f.name;
+  function pickedLogs(files, fromDir) {
+    logFiles = [...files].filter(f => !fromDir || LOG_NAMES.test(f.name)).sort((x, y) => pathOf(x).localeCompare(pathOf(y)));
+    $('logfile-result').hidden = true;
+    if (fromDir) {
+      $('logfile-file').value = '';
+      say('logfile-msg', logFiles.length ? `${logFiles.length} files (tx.csv and rx.csv) in that folder.`
+        : 'No tx.csv or rx.csv in that folder.', !logFiles.length);
+    } else say('logfile-msg', '');
+  }
+  $('logfile-file').addEventListener('change', e => { $('logfile-dir').value = ''; pickedLogs(e.target.files, false); });
+  $('logfile-dir-btn').addEventListener('click', () => $('logfile-dir').click());
+  $('logfile-dir').addEventListener('change', e => pickedLogs(e.target.files, true));
+
   $('logfile-form').addEventListener('submit', async e => {
     e.preventDefault();
-    const file = $('logfile-file').files[0];
     const device = $('logfile-device').value.trim().toUpperCase();
     $('logfile-result').hidden = true;
-    if (!file) return;
+    if (!logFiles.length) { say('logfile-msg', 'Choose log files or a log folder first.', true); return; }
     if (device.includes('*')) { say('logfile-msg', 'Use the callsign the tracker sends as, e.g. K7ABC-9 for K7ABC-*.', true); return; }
-    if (file.size > LOGFILE_MAX) { say('logfile-msg', `That file is ${(file.size / 2 ** 20).toFixed(1)} MB; the limit is 8 MB. Split it and upload the parts.`, true); return; }
+    const big = logFiles.find(f => f.size > LOGFILE_MAX);
+    if (big) { say('logfile-msg', `${pathOf(big)} is ${(big.size / 2 ** 20).toFixed(1)} MB; the limit is 8 MB per file. Split it and upload the parts.`, true); return; }
+    const n = v => v.toLocaleString();
+    const rows = [], tot = { tx: 0, heard: 0, accepted: 0 };
+    let failed = 0;
     $('logfile-send').disabled = true;
-    say('logfile-msg', 'Uploading and matching…');
     try {
-      const r = await api('POST', 'api/account/devicelog-file', { device, name: file.name, text: await file.text() });
-      say('logfile-msg', '');
-      const n = v => v.toLocaleString();
-      const parts = [`${n(r.rows)} rows`, `${n(r.accepted)} new`];
-      if (r.duplicates) parts.push(`${n(r.duplicates)} already stored`);
-      if (r.ignored) parts.push(`${n(r.ignored)} ignored (other stations' traffic)`);
-      if (r.skipped) parts.push(`${n(r.skipped)} skipped (not tx/rx)`);
-      if (r.rejected) parts.push(`<span class="error">${n(r.rejected)} with errors</span>`);
-      let html = `<p><b>${esc(device)}</b>, ${r.first ? `${fmt(r.first)} to ${fmt(r.last)}` : 'no dated rows'}: ${parts.join(', ')}.</p>`;
-      if (r.tx) html += `<p>${n(r.heard)} of ${n(r.tx)} new position beacons reached APRS-IS (${Math.round(100 * r.heard / r.tx)}%).</p>`;
-      if (r.errors.length) html += `<ul class="muted">${r.errors.map(x => `<li>Line ${x.line}: ${esc(x.error)}</li>`).join('')}</ul>`
-        + (r.rejected > r.errors.length ? `<p class="muted">First ${r.errors.length} errors shown.</p>` : '');
-      $('logfile-result').innerHTML = html;
+      for (const [i, file] of logFiles.entries()) {
+        say('logfile-msg', `Uploading and matching ${pathOf(file)} (${i + 1} of ${logFiles.length})…`);
+        try {
+          const r = await api('POST', 'api/account/devicelog-file', { device, name: pathOf(file), text: await file.text() });
+          for (const k in tot) tot[k] += r[k];
+          const parts = [`${n(r.accepted)} new`];
+          if (r.duplicates) parts.push(`${n(r.duplicates)} already stored`);
+          if (r.ignored) parts.push(`${n(r.ignored)} other stations'`);
+          if (r.untimed) parts.push(`${n(r.untimed)} without GPS time`);
+          if (r.skipped) parts.push(`${n(r.skipped)} skipped`);
+          if (r.rejected) parts.push(`<span class="error">${n(r.rejected)} with errors</span>`);
+          let li = `<b>${esc(pathOf(file))}</b>${r.kind === 'tx' ? ' (sent)' : r.kind === 'rx' ? ' (heard)' : ''}: `
+            + `${n(r.rows)} rows${r.first ? `, ${fmt(r.first)} to ${fmt(r.last)}` : ''}; ${parts.join(', ')}.`;
+          if (r.tx) li += ` ${n(r.heard)} of ${n(r.tx)} new position beacons reached APRS-IS.`;
+          if (r.errors.length) li += `<ul class="muted">${r.errors.slice(0, 5).map(x => `<li>Line ${x.line}: ${esc(x.error)}</li>`).join('')}</ul>`;
+          rows.push(li);
+        } catch (err) {
+          if (/not an approved device|log in|Login required/i.test(err.message)) throw err;  // same for every file
+          failed++;
+          rows.push(`<b>${esc(pathOf(file))}</b>: <span class="error">${esc(err.message)}</span>`);
+        }
+      }
+      let head = `<p><b>${esc(device)}</b>: ${n(tot.accepted)} new rows from ${logFiles.length - failed} of ${logFiles.length} files.`;
+      if (tot.tx) head += ` ${n(tot.heard)} of ${n(tot.tx)} new position beacons reached APRS-IS (${Math.round(100 * tot.heard / tot.tx)}%).`;
+      $('logfile-result').innerHTML = `${head}</p><ul>${rows.map(r => `<li>${r}</li>`).join('')}</ul>`;
       $('logfile-result').hidden = false;
-      $('logfile-file').value = '';
+      say('logfile-msg', '');
+      if (!failed) { $('logfile-file').value = ''; $('logfile-dir').value = ''; logFiles = []; }
     } catch (err) { say('logfile-msg', err.message, true); }
     finally { $('logfile-send').disabled = false; }
   });

@@ -501,14 +501,14 @@ def test_parse_log_file():
             f"{T + 70},DIGI,,,K7XYZ>APRS,K7ABC-9*:>hi\n"                   # not tx/rx: skipped
             "\n"
             f"soon,tx,,,K7ABC-9>APLRT1:{POS}\n")
-    entries, errors, skipped = parse_log_file(text)
+    entries, errors, skipped, untimed = parse_log_file(text)
     assert [(e["type"], e["ts"], e["line"]) for e in entries] == [("tx", T, 3), ("rx", T + 60, 4)]
     assert entries[0]["packet"] == entries[1]["packet"].replace("SQB*,WIDE1*", "WIDE1-1") == \
         f"K7ABC-9>APLRT1,WIDE1-1:{POS}a, b"
     assert entries[1]["rssi"] == "-97" and "rssi" not in entries[0]
-    assert skipped == 1 and errors == [{"line": 7, "error": "can't read the time 'soon'"}]
+    assert skipped == 1 and untimed == 0 and errors == [{"line": 7, "error": "can't read the time 'soon'"}]
     # no type column: every row is a transmission
-    entries, _, _ = parse_log_file(f"timestamp,raw\n{T},{tx_line(1)}\n")
+    entries, _, _, _ = parse_log_file(f"timestamp,raw\n{T},{tx_line(1)}\n")
     assert entries[0]["type"] == "tx" and entries[0]["packet"] == tx_line(1)
     for bad in ("", "# only a comment\n", f"{T},{tx_line(1)}\n", "when,what\n"):
         try:
@@ -536,10 +536,11 @@ def test_log_file_upload(client):
     assert rel["exact"] == 2 and rel["sent"] == 2 and rel["heard"] == 1
 
     # errors carry file line numbers; an entry upload() refuses counts as rejected
-    bad = f"utc,packet\n{T},{tx_line(1, 'K7XXX-9')}\nnope,{tx_line(2)}\n"
+    long = tx_line(9) + "x" * 600
+    bad = f"utc,packet\n{T},{tx_line(1, 'K7XXX-9')}\nnope,{tx_line(2)}\n{T + 9},{long}\n"
     r = client.post("/api/account/devicelog-file", json={"device": "K7ABC-9", "text": bad}, headers=H).json()
-    assert r["rejected"] == 2 and [e["line"] for e in r["errors"]] == [2, 3]
-    assert "not K7ABC-9" in r["errors"][0]["error"]
+    assert (r["rejected"], r["ignored"]) == (2, 1) and [e["line"] for e in r["errors"]] == [3, 4]
+    assert "one TNC2 line" in r["errors"][1]["error"]
 
     # big files go in batches of MAX_ENTRIES, in time order
     rows = [f"{T + 3600 + i * 5},{tx_line(i, 'K7ABC-7')}" for i in range(devicelog.MAX_ENTRIES + 5)][::-1]
@@ -567,3 +568,65 @@ def test_log_file_owner_only(client):
                       json={"device": "K7ABC-9", "text": text}).status_code == 404
     r = alice.post("/api/account/devicelog-file", headers=H, json={"device": "K7ALC-9", "text": text})
     assert r.status_code == 200 and r.json()["accepted"] == 1
+
+
+# The LoRanger V2's SD log, as its firmware docs give it (v2-sd-logging.md):
+# /log/<session>/tx.csv and rx.csv, packet RFC-4180 quoted, utc empty without a fix.
+V2_TX = ('utc,millis,packet\n'
+         '2026-11-22T15:04:37Z,60000,"KJ7NYE-4>APLRT1,WIDE1-1:=/8KS:1#-J>!!E/A=002532Loranger V2 Test Box Bat=8.03V"\n'
+         ',1000,"KJ7NYE-4>APLRT1,WIDE1-1:>status, ""quoted"""\n')
+V2_RX = 'utc,millis,rssi,snr,packet\n2026-11-22T15:05:12Z,95000,-98.0,8.5,"KJ7NYE-10>APRS:>Testing"\n'
+
+
+def test_parse_loranger_v2_files():
+    from app.devicelog import UploadError, parse_log_file
+    entries, errors, skipped, untimed = parse_log_file(V2_TX)
+    assert (errors, skipped, untimed) == ([], 0, 1)               # no GPS fix yet: skipped, not an error
+    assert entries == [{"type": "tx", "ts": 1795359877, "line": 2,
+                        "packet": "KJ7NYE-4>APLRT1,WIDE1-1:=/8KS:1#-J>!!E/A=002532Loranger V2 Test Box Bat=8.03V"}]
+    entries, errors, _, _ = parse_log_file(V2_RX)                   # signal strength columns: what it heard
+    assert errors == [] and entries == [{"type": "rx", "ts": 1795359912, "line": 2, "rssi": "-98.0", "snr": "8.5",
+                                         "packet": "KJ7NYE-10>APRS:>Testing"}]
+    _, _, _, untimed = parse_log_file('utc,millis,packet\n,5,"K7ABC-9>APRS:>a ""b"" c"\n')
+    assert untimed == 1
+    entries, _, _, _ = parse_log_file('utc,millis,packet\n2026-11-22T15:04:37Z,5,"K7ABC-9>APRS:>a ""b"", c"\n')
+    assert entries[0]["packet"] == 'K7ABC-9>APRS:>a "b", c'
+    for chan in ("utc,millis,event,detail\n,1000,wake,timer\n",                     # power.csv
+                  "millis,utc,source,event,detail\n45120,2026-11-22T15:03:42Z,cli,x,y\n",  # events.csv
+                  "millis,utc,vbat,vbus,vsys,ibat_ma,tdie_c,state,term,ts,faults,activity\n",  # battery.csv
+                  "millis,utc,lat,lon,alt_m,speed_kph,course,sats,hdop,activity\n"):    # gps.csv
+        try:
+            parse_log_file(chan)
+            raise AssertionError(chan)
+        except UploadError as e:
+            assert e.status == 422 and "no packets" in str(e)
+
+
+def test_loranger_v2_session_upload(client):
+    register(client, {"callsign": "KJ7NYE-4", "kind": "mobile"}, {"callsign": "SQB-1", "kind": "digi"})
+    ing = client.ingester
+    sent = [f"KJ7NYE-4>APLRT1,WIDE1-1:{POS}v2 {i}" for i in range(3)]
+    assert ing.handle_line(sent[0].replace("WIDE1-1:", "SQB-1*,WIDE1*,qAR,KG7KMV-13:"), now=T + 4) == "accept"
+    tx = "utc,millis,packet\n" + "".join(f'{iso(T + i * 60)},{i * 60000},"{p}"\n' for i, p in enumerate(sent))
+    tx += ',999,"KJ7NYE-4>APLRT1:>no fix yet"\n'
+    tx += f'{iso(T + 30)},30000,"K7XYZ-9>APRS,KJ7NYE-4*:>relayed for someone else"\n'   # it digipeated this
+    r = client.post("/api/account/devicelog-file", headers=H,
+                    json={"device": "KJ7NYE-4", "name": "20261122-150000/tx.csv", "text": tx}).json()
+    assert (r["kind"], r["rows"], r["accepted"], r["untimed"], r["ignored"], r["rejected"]) == ("tx", 5, 3, 1, 1, 0)
+    assert (r["tx"], r["heard"]) == (3, 1)
+    # rx.csv: its own beacon repeated by a digi is kept (with signal), other traffic dropped
+    rx = ("utc,millis,rssi,snr,packet\n"
+          f'{iso(T + 2)},2000,-98.0,8.5,"{sent[0].replace("WIDE1-1:", "SQB-1*,WIDE1*:")}"\n'
+          f'{iso(T + 9)},9000,-101.5,2.0,"N0ONE>APRS:>Testing"\n')
+    r = client.post("/api/account/devicelog-file", headers=H,
+                    json={"device": "KJ7NYE-4", "name": "20261122-150000/rx.csv", "text": rx}).json()
+    assert (r["kind"], r["accepted"], r["ignored"], r["tx"]) == ("rx", 1, 1, 0)
+    with db.session() as c:
+        assert c.execute("SELECT via, rssi, snr FROM device_log WHERE kind='rx'").fetchone()[:] == ("SQB-1", -98.0, 8.5)
+    # another tracker's card is refused, naming whose it is
+    r = client.post("/api/account/devicelog-file", headers=H, json={"device": "K7ABC-9", "text": tx})
+    assert r.status_code == 422 and "from KJ7NYE-4 (3), K7XYZ-9 (1)" in r.json()["detail"]
+    # a channel without packets
+    r = client.post("/api/account/devicelog-file", headers=H,
+                    json={"device": "KJ7NYE-4", "name": "power.csv", "text": "utc,millis,event,detail\n"})
+    assert r.status_code == 422 and "tx.csv or rx.csv" in r.json()["detail"]
