@@ -388,13 +388,12 @@
       </div>
     </section>
     <section class="card" id="logfile-card" hidden>
-      <h2>Upload a tracker's log files</h2>
-      <p class="muted small">Logs copied off a tracker's SD card, for example a LoRanger V2's <code>tx.csv</code>
-        (what it sent) and <code>rx.csv</code> (what it heard). Each beacon it sent is matched to the packets that
-        reached APRS-IS, so the <a href="./">reliability map</a> and <a href="compare">comparisons</a> count that
-        tracker's lost beacons exactly instead of estimating them. Choose the files, or the card's <code>log</code>
-        folder to send every session's <code>tx.csv</code> and <code>rx.csv</code> at once. Uploading the same file
-        again is harmless.</p>
+      <h2>Upload a tracker's transmit logs</h2>
+      <p class="muted small">The log of what a tracker sent, copied off its SD card (for a LoRanger V2, the
+        <code>tx.csv</code> in each session folder). Each beacon it sent is matched to the packets that reached
+        APRS-IS, so the <a href="./">reliability map</a> and <a href="compare">comparisons</a> count that tracker's
+        lost beacons exactly instead of estimating them. Choose the files, or the card's <code>log</code> folder to
+        send every session's <code>tx.csv</code> at once. Uploading the same file again is harmless.</p>
       <form id="logfile-form" class="inline-form">
         <input type="text" id="logfile-device" list="logfile-devices" required autocapitalize="characters"
           spellcheck="false" maxlength="20" placeholder="Mobile, e.g. K7ABC-9" aria-label="Mobile">

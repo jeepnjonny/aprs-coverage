@@ -495,18 +495,17 @@ def test_parse_log_file():
     assert parse_time("2025-11-16 00:00:00") == parse_time("2025-11-15T17:00:00-07:00") == 1763251200
     assert parse_time("yesterday") is None
     text = ("﻿# LoRanger V2 log\n"
-            "UTC,Type,RSSI,SNR,Packet\n"
-            f"{iso(T)},TX,,,K7ABC-9>APLRT1,WIDE1-1:{POS}a, b\n"            # unquoted commas kept
-            f'{T + 60},rx,-97,6.5,"K7ABC-9>APLRT1,SQB*,WIDE1*:{POS}a, b"\n'
-            f"{T + 70},DIGI,,,K7XYZ>APRS,K7ABC-9*:>hi\n"                   # not tx/rx: skipped
+            "UTC,Type,Packet\n"
+            f"{iso(T)},TX,K7ABC-9>APLRT1,WIDE1-1:{POS}a, b\n"             # unquoted commas kept
+            f'{T + 60},sent,"K7ABC-9>APLRT1,WIDE1-1:{POS}c"\n'
+            f'{T + 65},rx,"K7ABC-9>APLRT1,SQB*,WIDE1*:{POS}a, b"\n'        # not a transmission: skipped
+            f"{T + 70},DIGI,K7XYZ>APRS,K7ABC-9*:>hi\n"                     # skipped
             "\n"
-            f"soon,tx,,,K7ABC-9>APLRT1:{POS}\n")
+            f"soon,tx,K7ABC-9>APLRT1:{POS}\n")
     entries, errors, skipped, untimed = parse_log_file(text)
-    assert [(e["type"], e["ts"], e["line"]) for e in entries] == [("tx", T, 3), ("rx", T + 60, 4)]
-    assert entries[0]["packet"] == entries[1]["packet"].replace("SQB*,WIDE1*", "WIDE1-1") == \
-        f"K7ABC-9>APLRT1,WIDE1-1:{POS}a, b"
-    assert entries[1]["rssi"] == "-97" and "rssi" not in entries[0]
-    assert skipped == 1 and untimed == 0 and errors == [{"line": 7, "error": "can't read the time 'soon'"}]
+    assert [(e["type"], e["ts"], e["line"]) for e in entries] == [("tx", T, 3), ("tx", T + 60, 4)]
+    assert entries[0]["packet"] == f"K7ABC-9>APLRT1,WIDE1-1:{POS}a, b"
+    assert skipped == 2 and untimed == 0 and errors == [{"line": 8, "error": "can't read the time 'soon'"}]
     # no type column: every row is a transmission
     entries, _, _, _ = parse_log_file(f"timestamp,raw\n{T},{tx_line(1)}\n")
     assert entries[0]["type"] == "tx" and entries[0]["packet"] == tx_line(1)
@@ -584,9 +583,11 @@ def test_parse_loranger_v2_files():
     assert (errors, skipped, untimed) == ([], 0, 1)               # no GPS fix yet: skipped, not an error
     assert entries == [{"type": "tx", "ts": 1795359877, "line": 2,
                         "packet": "KJ7NYE-4>APLRT1,WIDE1-1:=/8KS:1#-J>!!E/A=002532Loranger V2 Test Box Bat=8.03V"}]
-    entries, errors, _, _ = parse_log_file(V2_RX)                   # signal strength columns: what it heard
-    assert errors == [] and entries == [{"type": "rx", "ts": 1795359912, "line": 2, "rssi": "-98.0", "snr": "8.5",
-                                         "packet": "KJ7NYE-10>APRS:>Testing"}]
+    try:
+        parse_log_file(V2_RX)                                       # receive logs aren't taken
+        raise AssertionError("rx.csv accepted")
+    except UploadError as e:
+        assert e.status == 422 and "receive log" in str(e)
     _, _, _, untimed = parse_log_file('utc,millis,packet\n,5,"K7ABC-9>APRS:>a ""b"" c"\n')
     assert untimed == 1
     entries, _, _, _ = parse_log_file('utc,millis,packet\n2026-11-22T15:04:37Z,5,"K7ABC-9>APRS:>a ""b"", c"\n')
@@ -603,30 +604,24 @@ def test_parse_loranger_v2_files():
 
 
 def test_loranger_v2_session_upload(client):
-    register(client, {"callsign": "KJ7NYE-4", "kind": "mobile"}, {"callsign": "SQB-1", "kind": "digi"})
+    register(client, {"callsign": "KJ7NYE-4", "kind": "mobile"})
     ing = client.ingester
     sent = [f"KJ7NYE-4>APLRT1,WIDE1-1:{POS}v2 {i}" for i in range(3)]
-    assert ing.handle_line(sent[0].replace("WIDE1-1:", "SQB-1*,WIDE1*,qAR,KG7KMV-13:"), now=T + 4) == "accept"
+    assert ing.handle_line(sent[0].replace("WIDE1-1:", "SQB*,WIDE1*,qAR,KG7KMV-13:"), now=T + 4) == "accept"
     tx = "utc,millis,packet\n" + "".join(f'{iso(T + i * 60)},{i * 60000},"{p}"\n' for i, p in enumerate(sent))
     tx += ',999,"KJ7NYE-4>APLRT1:>no fix yet"\n'
     tx += f'{iso(T + 30)},30000,"K7XYZ-9>APRS,KJ7NYE-4*:>relayed for someone else"\n'   # it digipeated this
     r = client.post("/api/account/devicelog-file", headers=H,
                     json={"device": "KJ7NYE-4", "name": "20261122-150000/tx.csv", "text": tx}).json()
-    assert (r["kind"], r["rows"], r["accepted"], r["untimed"], r["ignored"], r["rejected"]) == ("tx", 5, 3, 1, 1, 0)
+    assert (r["rows"], r["accepted"], r["untimed"], r["ignored"], r["rejected"]) == (5, 3, 1, 1, 0)
     assert (r["tx"], r["heard"]) == (3, 1)
-    # rx.csv: its own beacon repeated by a digi is kept (with signal), other traffic dropped
-    rx = ("utc,millis,rssi,snr,packet\n"
-          f'{iso(T + 2)},2000,-98.0,8.5,"{sent[0].replace("WIDE1-1:", "SQB-1*,WIDE1*:")}"\n'
-          f'{iso(T + 9)},9000,-101.5,2.0,"N0ONE>APRS:>Testing"\n')
     r = client.post("/api/account/devicelog-file", headers=H,
-                    json={"device": "KJ7NYE-4", "name": "20261122-150000/rx.csv", "text": rx}).json()
-    assert (r["kind"], r["accepted"], r["ignored"], r["tx"]) == ("rx", 1, 1, 0)
-    with db.session() as c:
-        assert c.execute("SELECT via, rssi, snr FROM device_log WHERE kind='rx'").fetchone()[:] == ("SQB-1", -98.0, 8.5)
+                    json={"device": "KJ7NYE-4", "name": "20261122-150000/rx.csv", "text": V2_RX})
+    assert r.status_code == 422 and "Upload the tracker's tx.csv" in r.json()["detail"]
     # another tracker's card is refused, naming whose it is
     r = client.post("/api/account/devicelog-file", headers=H, json={"device": "K7ABC-9", "text": tx})
     assert r.status_code == 422 and "from KJ7NYE-4 (3), K7XYZ-9 (1)" in r.json()["detail"]
     # a channel without packets
     r = client.post("/api/account/devicelog-file", headers=H,
                     json={"device": "KJ7NYE-4", "name": "power.csv", "text": "utc,millis,event,detail\n"})
-    assert r.status_code == 422 and "tx.csv or rx.csv" in r.json()["detail"]
+    assert r.status_code == 422 and "Upload a tracker's tx.csv" in r.json()["detail"]

@@ -245,14 +245,15 @@ def upload(c, user: dict, device: str, entries: list[dict], now: int | None = No
 
 # ── log files copied off a tracker's SD card ────────────────────────────────
 # Uploaded on the account page by the device's owner (an admin for any device),
-# a file at a time. Each row becomes a tx/rx entry for upload(), so matching,
-# reliability and comparisons treat it exactly like an app's live upload.
+# a file at a time. Only what the tracker sent is taken: each row becomes a tx
+# entry for upload(), so matching, reliability and comparisons treat it exactly
+# like an app's live upload. Receive logs are refused; for coverage they add
+# little beyond the transmit log, and most of their rows are other traffic.
 #
 # The LoRanger V2 writes one directory per power-on, /log/<session>/, with
-# tx.csv (utc,millis,packet) and rx.csv (utc,millis,rssi,snr,packet): packet
-# RFC-4180 quoted, utc ISO 8601 and empty while GPS has no fix. Its other
-# channels (power, events, battery, gps, accel) have no packets and are
-# refused. The parser goes by column names, not positions, so other trackers'
+# tx.csv (utc,millis,packet): packet RFC-4180 quoted, utc ISO 8601 and empty
+# while GPS has no fix. Its rx.csv (with rssi,snr) and its other channels
+# (power, events, battery, gps, accel) are refused. The parser goes by column names, not positions, so other trackers'
 # logs with the usual names work too.
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_FILE_ROWS = 100_000
@@ -260,11 +261,9 @@ FILE_COLUMNS = {
     "time": ("utc", "time", "timestamp", "ts", "datetime", "date_time", "unix", "epoch", "gps_time"),
     "type": ("type", "dir", "direction", "kind", "event"),
     "packet": ("packet", "raw", "tnc2", "frame", "aprs", "line", "data"),
-    "rssi": ("rssi",),
-    "snr": ("snr",),
 }
-FILE_TYPES = {"tx": "tx", "t": "tx", "sent": "tx", "send": "tx", "beacon": "tx",
-              "rx": "rx", "r": "rx", "recv": "rx", "received": "rx", "heard": "rx"}
+RX_COLUMNS = ("rssi", "snr")                 # a receive log: refused
+TX_TYPES = ("tx", "t", "sent", "send", "beacon")  # in a type column, the rows kept
 
 
 def parse_time(v: str) -> int | None:
@@ -287,20 +286,18 @@ def parse_time(v: str) -> int | None:
 
 
 def parse_log_file(text: str) -> tuple[list[dict], list[dict], int, int]:
-    """(entries, errors, skipped, untimed) from a CSV transmit or receive
-    log. Each entry carries the file `line` it came from. The first non-blank,
-    non-'#' row is the header and needs a time column and a packet column.
-    Without a type column, a file with signal strength (rssi/snr: rx.csv) is
-    what the tracker heard, otherwise what it sent (tx.csv). Rows of other
-    types (digipeats, notes) are skipped, and so are rows with no time (sent
-    before GPS had a fix: they can't be placed). When the packet is the last
+    """(entries, errors, skipped, untimed) from a CSV transmit log. Each
+    entry carries the file `line` it came from. The first non-blank, non-'#'
+    row is the header and needs a time column and a packet column; a file with
+    signal-strength columns is a receive log and is refused. With a type
+    column, only transmissions are kept and other rows are skipped; so are rows
+    with no time (sent before GPS had a fix: they can't be placed). When the packet is the last
     column, commas in an unquoted packet are kept. Raises UploadError if the
     file can't be read at all."""
     text = text.lstrip("\ufeff")
     rows = csv.reader(io.StringIO(text, newline=""))
     cols: dict[str, int] | None = None
     entries, errors, skipped, untimed = [], [], 0, 0
-    default_type = "tx"
     for row in rows:
         line = rows.line_num
         if not row or not "".join(row).strip() or row[0].lstrip().startswith("#"):
@@ -314,11 +311,12 @@ def parse_log_file(text: str) -> tuple[list[dict], list[dict], int, int]:
                         cols[col] = i
                         break
             if "time" not in cols or "packet" not in cols:
-                raise UploadError(422, "This file has no packets. Upload a tracker's tx.csv or rx.csv (its first "
-                                       "row must name a time column, such as utc, and a packet column). Its "
+                raise UploadError(422, "This file has no packets. Upload a tracker's tx.csv (its first row must "
+                                       "name a time column, such as utc, and a packet column). Its "
                                        "columns: " + ", ".join(row)[:200])
-            if "rssi" in cols or "snr" in cols:
-                default_type = "rx"
+            if any(n in RX_COLUMNS for n in names):
+                raise UploadError(422, "This is a receive log (rx.csv); only transmit logs are taken. "
+                                       "Upload the tracker's tx.csv.")
             continue
         if len(entries) >= MAX_FILE_ROWS:
             raise UploadError(413, f"At most {MAX_FILE_ROWS:,} rows per file")
@@ -329,12 +327,9 @@ def parse_log_file(text: str) -> tuple[list[dict], list[dict], int, int]:
         # An unquoted packet with commas in its path or comment spills into
         # extra columns; when the packet is the last column, put it back together.
         packet = ",".join(row[pi:]) if pi == max(cols.values()) else row[pi]
-        t = default_type
-        if "type" in cols:
-            t = FILE_TYPES.get(row[cols["type"]].strip().lower(), "")
-            if not t:
-                skipped += 1
-                continue
+        if "type" in cols and row[cols["type"]].strip().lower() not in TX_TYPES:
+            skipped += 1
+            continue
         if not row[cols["time"]].strip():
             untimed += 1
             continue
@@ -342,11 +337,7 @@ def parse_log_file(text: str) -> tuple[list[dict], list[dict], int, int]:
         if ts is None:
             errors.append({"line": line, "error": f"can't read the time {row[cols['time']][:40]!r}"})
             continue
-        e = {"type": t, "ts": ts, "packet": packet, "line": line}
-        for k in ("rssi", "snr"):
-            if k in cols and cols[k] < len(row) and cols[k] != pi and row[cols[k]].strip():
-                e[k] = row[cols[k]].strip()
-        entries.append(e)
+        entries.append({"type": "tx", "ts": ts, "packet": packet, "line": line})
     if cols is None:
         raise UploadError(422, "The file is empty")
     return entries, errors, skipped, untimed
@@ -366,18 +357,15 @@ def upload_file(c, user: dict, device: str, text: str, now: int | None = None) -
         raise UploadError(422, f"{device} is an igate/digi; log files are for mobiles")
     entries, errors, skipped, untimed = parse_log_file(text)
     sender = device.split(":", 1)[0]
-    sources = Counter(e["packet"].partition(">")[0].strip().upper() for e in entries if e["type"] == "tx")
+    sources = Counter(e["packet"].partition(">")[0].strip().upper() for e in entries)
     if sources and not sources[sender]:
         top = ", ".join(f"{call} ({n})" for call, n in sources.most_common(3))
         raise UploadError(422, f"None of the transmissions in this file are from {device}. They are from {top}. "
                                "Pick the device whose card this is.")
     relayed = sum(n for call, n in sources.items() if call != sender)
-    entries = [e for e in entries if e["type"] != "tx" or e["packet"].partition(">")[0].strip().upper() == sender]
+    entries = [e for e in entries if e["packet"].partition(">")[0].strip().upper() == sender]
     entries.sort(key=lambda e: e["ts"])
-    kinds = {e["type"] for e in entries}
-    res = {"rows": len(entries) + relayed + len(errors) + skipped + untimed,
-           "kind": kinds.pop() if len(kinds) == 1 else ("mixed" if kinds else None),
-           "accepted": 0, "duplicates": 0, "ignored": relayed, "skipped": skipped, "untimed": untimed,
+    res = {"rows": len(entries) + relayed + len(errors) + skipped + untimed, "accepted": 0, "duplicates": 0, "ignored": relayed, "skipped": skipped, "untimed": untimed,
            "rejected": len(errors), "tx": 0, "heard": 0, "first": None, "last": None}
     for i in range(0, len(entries), MAX_ENTRIES):
         batch = entries[i:i + MAX_ENTRIES]

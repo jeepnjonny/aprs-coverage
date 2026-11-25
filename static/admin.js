@@ -631,17 +631,17 @@
     if (!$('logfile-device').value && calls.length === 1 && !calls[0].endsWith('*')) $('logfile-device').value = calls[0];
   }
   // Files to send: picked one by one, or from a whole log folder (every
-  // session's tx.csv and rx.csv; the card's other channels have no packets).
+  // session's tx.csv; only transmit logs are taken).
   let logFiles = [];
-  const LOG_NAMES = /^(tx|rx)\.csv$/i;
+  const LOG_NAMES = /^tx\.csv$/i;
   const pathOf = f => f.webkitRelativePath || f.name;
   function pickedLogs(files, fromDir) {
     logFiles = [...files].filter(f => !fromDir || LOG_NAMES.test(f.name)).sort((x, y) => pathOf(x).localeCompare(pathOf(y)));
     $('logfile-result').hidden = true;
     if (fromDir) {
       $('logfile-file').value = '';
-      say('logfile-msg', logFiles.length ? `${logFiles.length} files (tx.csv and rx.csv) in that folder.`
-        : 'No tx.csv or rx.csv in that folder.', !logFiles.length);
+      say('logfile-msg', logFiles.length ? `${logFiles.length} tx.csv files in that folder.`
+        : 'No tx.csv in that folder.', !logFiles.length);
     } else say('logfile-msg', '');
   }
   $('logfile-file').addEventListener('change', e => { $('logfile-dir').value = ''; pickedLogs(e.target.files, false); });
@@ -668,11 +668,11 @@
           for (const k in tot) tot[k] += r[k];
           const parts = [`${n(r.accepted)} new`];
           if (r.duplicates) parts.push(`${n(r.duplicates)} already stored`);
-          if (r.ignored) parts.push(`${n(r.ignored)} other stations'`);
+          if (r.ignored) parts.push(`${n(r.ignored)} relayed for other stations`);
           if (r.untimed) parts.push(`${n(r.untimed)} without GPS time`);
           if (r.skipped) parts.push(`${n(r.skipped)} skipped`);
           if (r.rejected) parts.push(`<span class="error">${n(r.rejected)} with errors</span>`);
-          let li = `<b>${esc(pathOf(file))}</b>${r.kind === 'tx' ? ' (sent)' : r.kind === 'rx' ? ' (heard)' : ''}: `
+          let li = `<b>${esc(pathOf(file))}</b>: `
             + `${n(r.rows)} rows${r.first ? `, ${fmt(r.first)} to ${fmt(r.last)}` : ''}; ${parts.join(', ')}.`;
           if (r.tx) li += ` ${n(r.heard)} of ${n(r.tx)} new position beacons reached APRS-IS.`;
           if (r.errors.length) li += `<ul class="muted">${r.errors.slice(0, 5).map(x => `<li>Line ${x.line}: ${esc(x.error)}</li>`).join('')}</ul>`;
